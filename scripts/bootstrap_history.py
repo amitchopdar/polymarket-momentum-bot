@@ -13,6 +13,7 @@ import urllib.request
 import urllib.parse
 import json
 import logging
+from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
 
 from src.config import config
