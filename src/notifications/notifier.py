@@ -102,11 +102,15 @@ class TelegramNotifier:
                 "parse_mode": "HTML"
             }).encode("utf-8")
 
-            req = urllib.request.Request(url, data=data, headers={"User-Agent": "PolymarketBot/1.0"})
             try:
                 with urllib.request.urlopen(req, timeout=5.0) as resp:
                     if resp.status != 200:
                         logger.warning(f"Telegram API response HTTP {resp.status} for chat_id {cid}")
+            except urllib.error.HTTPError as e:
+                if e.code == 400:
+                    logger.warning(f"Telegram user {cid} has not initialized conversation with the bot (click /start in Telegram).")
+                else:
+                    logger.warning(f"Failed to dispatch Telegram message to chat_id {cid}: HTTP {e.code}")
             except Exception as e:
                 logger.error(f"Failed to dispatch Telegram message to chat_id {cid}: {e}")
 
