@@ -214,12 +214,12 @@ class ModelTrainer:
 
         # Optuna Hyperparameter Optimization Objective
         def objective(trial: optuna.Trial) -> float:
-            lr = trial.suggest_float("learning_rate", 0.005, 0.05, log=True)
-            max_depth = trial.suggest_int("max_depth", 3, 6)
-            num_leaves = trial.suggest_int("num_leaves", 15, 31)
-            min_child_samples = trial.suggest_int("min_child_samples", 20, 150)
-            reg_alpha = trial.suggest_float("reg_alpha", 1e-3, 10.0, log=True)
-            reg_lambda = trial.suggest_float("reg_lambda", 1e-3, 10.0, log=True)
+            lr = trial.suggest_float("learning_rate", 0.01, 0.15, log=True)
+            max_depth = trial.suggest_int("max_depth", 3, 8)
+            num_leaves = trial.suggest_int("num_leaves", 15, 63)
+            min_child_samples = trial.suggest_int("min_child_samples", 15, 120)
+            reg_alpha = trial.suggest_float("reg_alpha", 1e-3, 5.0, log=True)
+            reg_lambda = trial.suggest_float("reg_lambda", 1e-3, 5.0, log=True)
 
             cv_losses = []
             for train_idx, val_idx in self.cv.split(X_cv):
