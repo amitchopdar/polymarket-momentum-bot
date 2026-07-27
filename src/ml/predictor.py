@@ -101,7 +101,10 @@ class CalibratedLGBMPredictor:
                 X_feat = feature_vector.reshape(1, -1)
                 raw_prob_arr = gbm.predict(X_feat)
                 p_uncal = float(np.clip(raw_prob_arr[0], 0.01, 0.99))
-                cal_prob_arr = calibrator.transform(raw_prob_arr)
+                if hasattr(calibrator, "predict_proba"):
+                    cal_prob_arr = calibrator.predict_proba(raw_prob_arr.reshape(-1, 1))[:, 1]
+                else:
+                    cal_prob_arr = calibrator.transform(raw_prob_arr)
                 p_cal = float(np.clip(cal_prob_arr[0], 0.01, 0.99))
             else:
                 # Fallback scoring model weights (RSI, OBI, EMA Momentum)

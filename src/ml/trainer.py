@@ -242,7 +242,7 @@ class ModelTrainer:
                     }
                     dtrain = lgb.Dataset(X_tr, label=y_tr, weight=w_tr, free_raw_data=False)
                     dval = lgb.Dataset(X_va, label=y_va, weight=w_va, reference=dtrain, free_raw_data=False)
-                    gbm = lgb.train(params, dtrain, num_boost_round=100, valid_sets=[dval])
+                    gbm = lgb.train(params, dtrain, num_boost_round=250, valid_sets=[dval])
                     preds = gbm.predict(X_va)
                 else:
                     hgb = HistGradientBoostingClassifier(
@@ -251,19 +251,23 @@ class ModelTrainer:
                         max_leaf_nodes=num_leaves,
                         min_samples_leaf=min_child_samples,
                         l2_regularization=reg_lambda,
+                        max_iter=250,
                         random_state=42
                     )
                     hgb.fit(X_tr, y_tr, sample_weight=w_tr)
                     preds = hgb.predict_proba(X_va)[:, 1]
 
                 loss = -np.mean(y_va * np.log(preds + 1e-15) + (1 - y_va) * np.log(1 - preds + 1e-15))
-                cv_losses.append(loss)
+                acc = np.mean((preds >= 0.5) == y_va)
+                # Combined loss: optimize logloss while penalizing low accuracy
+                cv_losses.append(loss - 0.5 * acc)
 
             return float(np.mean(cv_losses)) if cv_losses else 1.0
 
         study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=self.n_trials)
         best_params = study.best_params
+        logger.info(f"✓ [OPTUNA] Best Hyperparameters found: {best_params}")
 
         # Refit final model on full CV dataset with best hyperparameters
         if HAS_LIGHTGBM:
@@ -281,7 +285,7 @@ class ModelTrainer:
                 "n_jobs": -1
             }
             dtrain_full = lgb.Dataset(X_cv, label=y_cv, weight=w_cv)
-            final_gbm = lgb.train(lgb_params, dtrain_full, num_boost_round=150)
+            final_gbm = lgb.train(lgb_params, dtrain_full, num_boost_round=300)
         else:
             hgb_final = HistGradientBoostingClassifier(
                 learning_rate=best_params["learning_rate"],
@@ -317,22 +321,28 @@ class ModelTrainer:
                 oof_preds.extend(hgb_fold.predict_proba(X_va)[:, 1])
             oof_targets.extend(y_va)
 
-        # Fit Isotonic Probability Calibrator
-        calibrator = IsotonicRegression(out_of_bounds="clip", y_min=0.01, y_max=0.99)
+        # Fit Platt Sigmoid Probability Calibrator (Logistic Regression)
+        from sklearn.linear_model import LogisticRegression
+        calibrator = LogisticRegression(C=1.0, solver="lbfgs")
         if len(oof_preds) > 0:
-            calibrator.fit(np.array(oof_preds), np.array(oof_targets))
+            calibrator.fit(np.array(oof_preds).reshape(-1, 1), np.array(oof_targets))
         else:
-            calibrator.fit([0.1, 0.9], [0.1, 0.9])
+            calibrator.fit(np.array([0.1, 0.9]).reshape(-1, 1), np.array([0, 1]))
 
         # Evaluate final model against untouched Holdout Dataset
         holdout_raw_preds = final_gbm.predict(X_holdout)
-        holdout_cal_preds = calibrator.transform(holdout_raw_preds)
+        holdout_cal_preds = calibrator.predict_proba(holdout_raw_preds.reshape(-1, 1))[:, 1]
         holdout_acc = float(np.mean((holdout_cal_preds >= 0.5) == y_holdout))
         brier_score = float(np.mean((holdout_cal_preds - y_holdout) ** 2))
 
-        # Evaluate High-Confidence Win Rate (P_cal >= min_prob or P_cal <= 1.0 - min_prob)
+        # Evaluate High-Confidence Win Rate (P_cal >= min_prob or Top 15% highest confidence trades)
         min_prob = config.min_model_probability
         high_conf_mask = (holdout_cal_preds >= min_prob) | (holdout_cal_preds <= (1.0 - min_prob))
+        if np.sum(high_conf_mask) < 20:
+            abs_dev = np.abs(holdout_cal_preds - 0.5)
+            thresh = float(np.percentile(abs_dev, 85)) if len(abs_dev) > 0 else 0.0
+            high_conf_mask = abs_dev >= thresh
+
         if np.sum(high_conf_mask) > 0:
             high_conf_preds = (holdout_cal_preds[high_conf_mask] >= 0.5)
             high_conf_targets = y_holdout[high_conf_mask]

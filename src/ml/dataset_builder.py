@@ -97,8 +97,14 @@ class HistoricalDatasetBuilder:
             if np.isnan(features).any() or np.isinf(features).any():
                 continue
 
+            # Skip flat/doji noise candles (< 0.01% price change)
+            open_price = float(target_candle.get("Open", 1.0))
+            close_price = float(target_candle.get("Close", 1.0))
+            if abs(close_price - open_price) < (0.0001 * open_price):
+                continue
+
             # Target Label: 1 if target candle closes > opens (UP win), else 0 (DOWN win)
-            target = 1 if target_candle["Close"] > target_candle["Open"] else 0
+            target = 1 if close_price > open_price else 0
 
             # Volatility Squeeze Metric: ATR / Normalized High-Low Range
             atr_vol = features[13] if len(features) > 13 else (target_candle["High"] - target_candle["Low"])
