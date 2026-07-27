@@ -20,6 +20,10 @@ __pycache__/
 .vscode/
 .idea/
 
+# Models & Artifacts
+models/*.pkl
+models/
+
 # Environment / Secret overrides
 .env
 .env.local
