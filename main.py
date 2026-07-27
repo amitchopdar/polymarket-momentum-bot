@@ -189,13 +189,15 @@ class PolymarketBot:
                 )
                 if pos_closed:
                     self.notifier.notify_exit(candle_start, settlement_price, "END_OF_CANDLE", pos_closed.get("Pnl", 0.0))
-            else:
-                # Update actual outcome for NO_TRADE or already-closed position
-                if self.async_writer:
+            if self.async_writer:
+                if not (active_pos and active_pos["Position_Status"] in ("PENDING", "OPEN")):
                     self.async_writer.enqueue_write(
                         "UPDATE Positions SET Actual_Outcome = ? WHERE Candle_Start = ?;",
                         (actual_outcome, candle_start)
                     )
+                # Flush WAL entries to disk immediately at end of every 5-minute candle
+                self.async_writer.checkpoint()
+                logger.info(f"💾 [WAL CHECKPOINT] Flushed SQLite WAL entries to PolyDB.sqlite disk for candle {candle_start}.")
 
     def _handle_kline(self, kline_data: Dict[str, Any]) -> None:
         """

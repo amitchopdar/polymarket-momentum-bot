@@ -108,6 +108,12 @@ class AsyncDBWriter:
         """
         self.write_queue.put((sql, params))
 
+    def checkpoint(self) -> None:
+        """
+        Enqueues a FULL WAL checkpoint query to flush all WAL entries to PolyDB.sqlite disk immediately.
+        """
+        self.enqueue_write("PRAGMA wal_checkpoint(FULL);")
+
     def _run(self) -> None:
         """
         Main worker thread loop processing write queries with locked retry resilience.
