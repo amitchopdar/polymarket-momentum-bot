@@ -103,6 +103,7 @@ class TelegramNotifier:
             }).encode("utf-8")
 
             try:
+                req = urllib.request.Request(url, data=data, headers={"User-Agent": "PolymarketBot/1.0"})
                 with urllib.request.urlopen(req, timeout=5.0) as resp:
                     if resp.status != 200:
                         logger.warning(f"Telegram API response HTTP {resp.status} for chat_id {cid}")
