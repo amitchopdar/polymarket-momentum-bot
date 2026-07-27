@@ -150,21 +150,30 @@ class PolymarketBot:
             up_close, dn_close = settlement
             real_vol = self.token_resolver.cached_volumes.get(str(start_ts_ms), candle.get("Volume", 0.0))
 
-            up_high = max(up_p, up_close)
-            up_low = min(up_p, up_close)
-            dn_high = max(dn_p, dn_close)
-            dn_low = min(dn_p, dn_close)
+            base_up_h = max(up_p, up_close)
+            base_up_l = min(up_p, up_close)
+            base_dn_h = max(dn_p, dn_close)
+            base_dn_l = min(dn_p, dn_close)
+
+            # Retrieve dynamic minute-by-minute high/low tracking
+            minute_dict = self.minute_tracker.get_dict(base_up_h, base_up_l, base_dn_h, base_dn_l)
+
+            # Compute true overall 5-minute High and Low across all minute ticks
+            up_high = max([base_up_h] + [v for k, v in minute_dict.items() if "Up_High" in k])
+            up_low = min([base_up_l] + [v for k, v in minute_dict.items() if "Up_Low" in k])
+            dn_high = max([base_dn_h] + [v for k, v in minute_dict.items() if "Down_High" in k])
+            dn_low = min([base_dn_l] + [v for k, v in minute_dict.items() if "Down_Low" in k])
 
             up_ohclv = (up_p, up_high, up_low, up_close, real_vol)
             dn_ohclv = (dn_p, dn_high, dn_low, dn_close, real_vol)
-
-            # Retrieve dynamic minute-by-minute high/low tracking
-            minute_dict = self.minute_tracker.get_dict(up_high, up_low, dn_high, dn_low)
 
             self.token_resolver.record_odds_ohclv(
                 candle_start, up_tok, dn_tok, up_ohclv, dn_ohclv, minute_tracking=minute_dict, status="RESOLVED", async_writer=self.async_writer
             )
             self.minute_tracker.reset()
+
+            # Determine official market settlement actual outcome (UP vs DOWN)
+            actual_outcome = "UP" if up_close == 1.0 else ("DOWN" if dn_close == 1.0 else ("UP" if candle.get("Close", 0.0) > candle.get("Open", 0.0) else "DOWN"))
 
             # 5. Sprint 3 Active Position Expiry Settlement (Close OPEN/PENDING trades at candle end)
             active_pos = self.dry_strategy.active_positions.get(candle_start)
@@ -175,10 +184,18 @@ class PolymarketBot:
                     candle_start=candle_start,
                     token_id=active_pos.get("Token_Id", ""),
                     exit_price=settlement_price,
-                    reason="END_OF_CANDLE"
+                    reason="END_OF_CANDLE",
+                    actual_outcome=actual_outcome
                 )
                 if pos_closed:
                     self.notifier.notify_exit(candle_start, settlement_price, "END_OF_CANDLE", pos_closed.get("Pnl", 0.0))
+            else:
+                # Update actual outcome for NO_TRADE or already-closed position
+                if self.async_writer:
+                    self.async_writer.enqueue_write(
+                        "UPDATE Positions SET Actual_Outcome = ? WHERE Candle_Start = ?;",
+                        (actual_outcome, candle_start)
+                    )
 
     def _handle_kline(self, kline_data: Dict[str, Any]) -> None:
         """

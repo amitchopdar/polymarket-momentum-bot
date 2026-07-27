@@ -7,7 +7,7 @@ import sqlite3
 # US0.2: BTC_OHCLV table definition
 CREATE_BTC_OHCLV_TABLE = """
 CREATE TABLE IF NOT EXISTS BTC_OHCLV (
-    Candle_Start DATETIME PRIMARY KEY,
+    Candle_Start TEXT PRIMARY KEY,
     Interval TEXT NOT NULL,
     Open REAL NOT NULL,
     High REAL NOT NULL,
@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS BTC_OHCLV (
 # US0.3: Odds_OHCLV table definition
 CREATE_ODDS_OHCLV_TABLE = """
 CREATE TABLE IF NOT EXISTS Odds_OHCLV (
-    Candle_Start DATETIME PRIMARY KEY,
+    Candle_Start TEXT PRIMARY KEY,
     Up_Token_Id TEXT NOT NULL,
     Up_Open REAL,
     Up_High REAL,
@@ -63,11 +63,12 @@ CREATE TABLE IF NOT EXISTS Odds_OHCLV (
 # US0.4: Positions table definition
 CREATE_POSITIONS_TABLE = """
 CREATE TABLE IF NOT EXISTS Positions (
-    Candle_Start DATETIME PRIMARY KEY,
+    Candle_Start TEXT PRIMARY KEY,
     Prob_Cal REAL NOT NULL,
     Prob_Uncal REAL NOT NULL,
     Slug TEXT NOT NULL,
     Prediction_Side TEXT NOT NULL,
+    Actual_Outcome TEXT DEFAULT NULL,
     Entry_Timestamp DATETIME NOT NULL,
     Target_Price REAL NOT NULL,
     Target_Quantity REAL NOT NULL,
@@ -87,7 +88,7 @@ CREATE TABLE IF NOT EXISTS Positions (
 def create_tables(conn: sqlite3.Connection) -> None:
     """
     Executes table creation DDLs for BTC_OHCLV, Odds_OHCLV, and Positions.
-    Migrates Odds_OHCLV if Status column is missing.
+    Migrates Odds_OHCLV and Positions if missing new columns.
     """
     cursor = conn.cursor()
     cursor.execute(CREATE_BTC_OHCLV_TABLE)
@@ -99,5 +100,11 @@ def create_tables(conn: sqlite3.Connection) -> None:
     columns = [row[1] for row in cursor.fetchall()]
     if "Status" not in columns:
         cursor.execute("ALTER TABLE Odds_OHCLV ADD COLUMN Status TEXT DEFAULT 'RESOLVED';")
+
+    # Check and migrate Actual_Outcome column if Positions table existed previously without it
+    cursor.execute("PRAGMA table_info(Positions);")
+    pos_columns = [row[1] for row in cursor.fetchall()]
+    if "Actual_Outcome" not in pos_columns:
+        cursor.execute("ALTER TABLE Positions ADD COLUMN Actual_Outcome TEXT DEFAULT NULL;")
 
     conn.commit()

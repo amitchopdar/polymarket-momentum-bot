@@ -87,20 +87,28 @@ class TelegramNotifier:
                 logger.error(f"Error in TelegramNotifier worker loop: {e}")
 
     def _dispatch_http_request(self, html_text: str) -> None:
-        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-        data = urllib.parse.urlencode({
-            "chat_id": self.chat_id,
-            "text": html_text,
-            "parse_mode": "HTML"
-        }).encode("utf-8")
+        chat_ids = set()
+        if self.chat_id:
+            chat_ids.add(str(self.chat_id))
+        for uid in getattr(config, "telegram_authorized_user_ids", []):
+            if uid:
+                chat_ids.add(str(uid))
 
-        req = urllib.request.Request(url, data=data, headers={"User-Agent": "PolymarketBot/1.0"})
-        try:
-            with urllib.request.urlopen(req, timeout=5.0) as resp:
-                if resp.status != 200:
-                    logger.warning(f"Telegram API response HTTP {resp.status}")
-        except Exception as e:
-            logger.error(f"Failed to dispatch Telegram message: {e}")
+        for cid in chat_ids:
+            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+            data = urllib.parse.urlencode({
+                "chat_id": cid,
+                "text": html_text,
+                "parse_mode": "HTML"
+            }).encode("utf-8")
+
+            req = urllib.request.Request(url, data=data, headers={"User-Agent": "PolymarketBot/1.0"})
+            try:
+                with urllib.request.urlopen(req, timeout=5.0) as resp:
+                    if resp.status != 200:
+                        logger.warning(f"Telegram API response HTTP {resp.status} for chat_id {cid}")
+            except Exception as e:
+                logger.error(f"Failed to dispatch Telegram message to chat_id {cid}: {e}")
 
     # Convenience Formatted Alert Helpers
 

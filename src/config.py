@@ -32,26 +32,40 @@ USER_EXECUTION_MODE = "DRY_RUN"
 # 2. Risk & Execution Boundaries
 USER_TARGET_BUY_PRICE = 0.48       # Target limit buy price ($0.40)
 USER_STOP_LOSS_PRICE = 0.30        # Stop loss sell price ($0.20)
-USER_MIN_MODEL_PROBABILITY = 0.5001  # Minimum model directional confidence (51%)
+USER_MIN_MODEL_PROBABILITY = 0.5001  # Minimum model directional confidence threshold (55.0%)
 USER_MAX_POSITION_SIZE_USD = 2.0  # Max position size per trade ($50.0)
 USER_MIN_L2_DEPTH_SHARES = 10.0    # Min order book liquidity depth
 USER_MAX_SLIPPAGE_TOLERANCE = 0.02 # Max slippage tolerance (2%)
 USER_SLA_LATENCY_LIMIT_MS = 100.0  # Max SLA latency limit (100 ms)
+USER_ORDER_TIMEOUT_SEC = 300.0     # Order timeout cap (300 seconds / 5 minutes)
+USER_MIN_REQUIRED_WIN_RATE = 0.55  # Minimum model win rate (55.0%) required for production promotion
 
-# 3. Telegram Notifications & Remote Command Router
-USER_TELEGRAM_BOT_TOKEN = "8842999811:AAFtjgxVUFMIRxF77auE4TnM7g0PhyB7D1Q"       # Paste your Bot Token here (e.g. "7123456789:AAFx...")
-USER_TELEGRAM_CHAT_ID = "488798563"         # Primary Chat ID for real-time trade alerts (e.g. "987654321")
+# Auto-load local .env file if present
+_env_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+if os.path.exists(_env_file):
+    try:
+        with open(_env_file, "r", encoding="utf-8") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line and not _line.startswith("#") and "=" in _line:
+                    _k, _v = _line.split("=", 1)
+                    os.environ.setdefault(_k.strip(), _v.strip())
+    except Exception:
+        pass
+
+# 3. Telegram Notifications & Remote Command Router (Loaded via Environment / .env)
+USER_TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+USER_TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # List of authorized admin Telegram User IDs allowed to issue remote slash commands
-# Example for single admin: USER_TELEGRAM_AUTHORIZED_USER_IDS = [987654321]
-# Example for multiple admins: USER_TELEGRAM_AUTHORIZED_USER_IDS = [987654321, 123456789, 555666777]
-USER_TELEGRAM_AUTHORIZED_USER_IDS = [488798563]
+_auth_ids_env = os.getenv("TELEGRAM_AUTHORIZED_USER_IDS", "")
+USER_TELEGRAM_AUTHORIZED_USER_IDS = [int(x.strip()) for x in _auth_ids_env.split(",") if x.strip().isdigit()]
 
 # 4. Polymarket Live Wallet & API Credentials (Required ONLY for LIVE mode)
-USER_POLYMARKET_API_KEY = ""
-USER_POLYMARKET_SECRET = ""
-USER_POLYMARKET_PASSPHRASE = ""
-USER_POLYMARKET_PRIVATE_KEY = ""
+USER_POLYMARKET_API_KEY = os.getenv("POLYMARKET_API_KEY", "")
+USER_POLYMARKET_SECRET = os.getenv("POLYMARKET_SECRET", "")
+USER_POLYMARKET_PASSPHRASE = os.getenv("POLYMARKET_PASSPHRASE", "")
+USER_POLYMARKET_PRIVATE_KEY = os.getenv("POLYMARKET_PRIVATE_KEY", "")
 # ==============================================================================
 
 
@@ -87,6 +101,8 @@ class AppConfig:
     min_l2_depth_shares: float = field(default_factory=lambda: float(os.getenv("MIN_L2_DEPTH_SHARES", str(USER_MIN_L2_DEPTH_SHARES))))
     max_slippage_tolerance: float = field(default_factory=lambda: float(os.getenv("MAX_SLIPPAGE_TOLERANCE", str(USER_MAX_SLIPPAGE_TOLERANCE))))
     sla_latency_limit_ms: float = field(default_factory=lambda: float(os.getenv("SLA_LATENCY_LIMIT_MS", str(USER_SLA_LATENCY_LIMIT_MS))))
+    order_timeout_sec: float = field(default_factory=lambda: float(os.getenv("ORDER_TIMEOUT_SEC", str(USER_ORDER_TIMEOUT_SEC))))
+    min_required_win_rate: float = field(default_factory=lambda: float(os.getenv("MIN_REQUIRED_WIN_RATE", str(USER_MIN_REQUIRED_WIN_RATE))))
 
     # Notification & Remote Commands (US4.2, US4.3)
     telegram_enabled: bool = True

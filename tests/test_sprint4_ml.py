@@ -125,8 +125,8 @@ def test_model_registry_and_predictor_hotswap(populated_db, tmp_path):
 
 def test_amendment_3_order_timeout():
     strategy = DryExecutionStrategy(async_writer=None)
-    # Entry timestamp set to 200 seconds ago (> 180s timeout limit)
-    old_time = datetime.fromtimestamp(time.time() - 200.0, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    # Entry timestamp set to 320 seconds ago (> 300s timeout limit)
+    old_time = datetime.fromtimestamp(time.time() - 320.0, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     pos = {
         "Candle_Start": "2026-07-24 08:00:00",
         "Target_Price": 0.40,
@@ -139,4 +139,4 @@ def test_amendment_3_order_timeout():
     updated = strategy.check_and_update_positions("2026-07-24 08:00:00", "tok1", current_bid=0.35, current_ask=0.45)
     assert updated is not None
     assert updated["Position_Status"] == "CANCELLED"
-    assert updated["Cancel_Reason"] == "TIMEOUT_180S"
+    assert updated["Cancel_Reason"] == "TIMEOUT_300S"

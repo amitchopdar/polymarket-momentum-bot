@@ -49,7 +49,7 @@ def main():
 
     # 3. Evaluate Holdout Gate & Atomic Promotion via Registry
     registry = ModelRegistry(registry_dir="models", champion_path="models/lgbm_model.pkl")
-    promoted = registry.evaluate_and_promote(result_bundle, min_win_rate=config.min_model_probability, max_brier_score=0.25)
+    promoted = registry.evaluate_and_promote(result_bundle, min_win_rate=config.min_required_win_rate, max_brier_score=0.25)
 
     from src.notifications.notifier import TelegramNotifier, format_ist
     notifier = TelegramNotifier()

@@ -275,7 +275,7 @@ class TelegramCommandRouter:
         try:
             conn = sqlite3.connect(self.db_path, timeout=5.0)
             cursor = conn.cursor()
-            cursor.execute("SELECT Pnl FROM Positions WHERE Position_Status = 'CLOSED' AND Created_At >= ?;", (trained_at_str,))
+            cursor.execute("SELECT Pnl FROM Positions WHERE Position_Status = 'CLOSED' AND Candle_Start >= ?;", (trained_at_str,))
             pnls = [r[0] for r in cursor.fetchall() if r[0] is not None]
             conn.close()
 

@@ -101,6 +101,7 @@ class DryExecutionStrategy(IExecutionStrategy):
             "Prob_Uncal": prob_uncal,
             "Slug": slug,
             "Prediction_Side": side,
+            "Actual_Outcome": None,
             "Entry_Timestamp": now_dt,
             "Target_Price": target_price,
             "Target_Quantity": target_qty,
@@ -125,15 +126,15 @@ class DryExecutionStrategy(IExecutionStrategy):
         if self.async_writer:
             sql = """
                 INSERT OR REPLACE INTO Positions (
-                    Candle_Start, Prob_Cal, Prob_Uncal, Slug, Prediction_Side,
+                    Candle_Start, Prob_Cal, Prob_Uncal, Slug, Prediction_Side, Actual_Outcome,
                     Entry_Timestamp, Target_Price, Target_Quantity, Filled_Quantity,
                     Average_Fill_Price, Order_Id, Position_Status, Cancel_Reason,
                     Transaction_Price, Exit_Price, Exit_Reason, Pnl, Updated_At
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             params = (
                 pos["Candle_Start"], pos["Prob_Cal"], pos["Prob_Uncal"], pos["Slug"],
-                pos["Prediction_Side"], pos["Entry_Timestamp"], pos["Target_Price"],
+                pos["Prediction_Side"], pos["Actual_Outcome"], pos["Entry_Timestamp"], pos["Target_Price"],
                 pos["Target_Quantity"], pos["Filled_Quantity"], pos["Average_Fill_Price"],
                 pos["Order_Id"], pos["Position_Status"], pos["Cancel_Reason"],
                 pos["Transaction_Price"], pos["Exit_Price"], pos["Exit_Reason"],
@@ -158,7 +159,8 @@ class DryExecutionStrategy(IExecutionStrategy):
         slug: str,
         prob_cal: float,
         prob_uncal: float,
-        reason: str = "LOW_CONFIDENCE"
+        reason: str = "LOW_CONFIDENCE",
+        actual_outcome: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Records a NO_TRADE decision to PolyDB.sqlite Positions table.
@@ -170,6 +172,7 @@ class DryExecutionStrategy(IExecutionStrategy):
             "Prob_Uncal": prob_uncal,
             "Slug": slug,
             "Prediction_Side": "NO_TRADE",
+            "Actual_Outcome": actual_outcome,
             "Entry_Timestamp": now_dt,
             "Target_Price": 0.0,
             "Target_Quantity": 0.0,
@@ -187,15 +190,15 @@ class DryExecutionStrategy(IExecutionStrategy):
         if self.async_writer:
             sql = """
                 INSERT OR REPLACE INTO Positions (
-                    Candle_Start, Prob_Cal, Prob_Uncal, Slug, Prediction_Side,
+                    Candle_Start, Prob_Cal, Prob_Uncal, Slug, Prediction_Side, Actual_Outcome,
                     Entry_Timestamp, Target_Price, Target_Quantity, Filled_Quantity,
                     Average_Fill_Price, Order_Id, Position_Status, Cancel_Reason,
                     Transaction_Price, Exit_Price, Exit_Reason, Pnl, Updated_At
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             params = (
                 pos["Candle_Start"], pos["Prob_Cal"], pos["Prob_Uncal"], pos["Slug"],
-                pos["Prediction_Side"], pos["Entry_Timestamp"], pos["Target_Price"],
+                pos["Prediction_Side"], pos["Actual_Outcome"], pos["Entry_Timestamp"], pos["Target_Price"],
                 pos["Target_Quantity"], pos["Filled_Quantity"], pos["Average_Fill_Price"],
                 pos["Order_Id"], pos["Position_Status"], pos["Cancel_Reason"],
                 pos["Transaction_Price"], pos["Exit_Price"], pos["Exit_Reason"],
@@ -224,19 +227,20 @@ class DryExecutionStrategy(IExecutionStrategy):
         status = pos["Position_Status"]
         now_dt = datetime.fromtimestamp(time.time(), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
-        # [AMENDMENT 3] 3-Minute Pending Order Timeout Cap (180s)
+        # Pending Order Timeout Cap (Configurable 300s / 5 minutes)
         if status == "PENDING":
             try:
                 entry_dt = datetime.strptime(pos["Entry_Timestamp"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
                 elapsed_sec = time.time() - entry_dt.timestamp()
-                if elapsed_sec >= 180.0:
+                timeout_limit = getattr(config, "order_timeout_sec", 300.0)
+                if elapsed_sec >= timeout_limit:
                     pos["Position_Status"] = "CANCELLED"
-                    pos["Cancel_Reason"] = "TIMEOUT_180S"
+                    pos["Cancel_Reason"] = "TIMEOUT_300S"
                     pos["Updated_At"] = now_dt
                     if self.async_writer:
-                        sql = "UPDATE Positions SET Position_Status = 'CANCELLED', Cancel_Reason = 'TIMEOUT_180S', Updated_At = ? WHERE Candle_Start = ?"
+                        sql = "UPDATE Positions SET Position_Status = 'CANCELLED', Cancel_Reason = 'TIMEOUT_300S', Updated_At = ? WHERE Candle_Start = ?"
                         self.async_writer.enqueue_write(sql, (now_dt, candle_start))
-                    logger.info(f"⏱ [DRY EXECUTION TIMEOUT] Unfilled limit buy order auto-cancelled after 180s (Candle={candle_start}).")
+                    logger.info(f"⏱ [DRY EXECUTION TIMEOUT] Unfilled limit buy order auto-cancelled after {timeout_limit:.0f}s (Candle={candle_start}).")
                     return pos
             except Exception:
                 pass
@@ -313,32 +317,30 @@ class DryExecutionStrategy(IExecutionStrategy):
         candle_start: str,
         token_id: str,
         exit_price: float,
-        reason: str
+        reason: str = "END_OF_CANDLE",
+        actual_outcome: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
-        Executes position exit at candle end or settlement expiry.
+        Executes position exit at candle end or stop loss trigger.
         """
         pos = self.active_positions.get(candle_start)
-        if not pos or pos["Position_Status"] == "CLOSED":
+        if not pos:
             return None
 
         now_dt = datetime.fromtimestamp(time.time(), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
-        # If order was PENDING (unfilled buy), mark CANCELLED
+        if actual_outcome:
+            pos["Actual_Outcome"] = actual_outcome
+
+        # If order was PENDING at candle end, cancel it
         if pos["Position_Status"] == "PENDING":
             pos["Position_Status"] = "CANCELLED"
             pos["Cancel_Reason"] = reason
             pos["Updated_At"] = now_dt
 
             if self.async_writer:
-                sql = """
-                    UPDATE Positions SET
-                        Position_Status = 'CANCELLED',
-                        Cancel_Reason = ?,
-                        Updated_At = ?
-                    WHERE Candle_Start = ?
-                """
-                self.async_writer.enqueue_write(sql, (reason, now_dt, candle_start))
+                sql = "UPDATE Positions SET Position_Status = 'CANCELLED', Cancel_Reason = ?, Actual_Outcome = ?, Updated_At = ? WHERE Candle_Start = ?"
+                self.async_writer.enqueue_write(sql, (reason, actual_outcome, now_dt, candle_start))
 
             logger.info(f"[DRY EXECUTION CANCEL] Unfilled Limit Buy Cancelled at Candle End: Candle={candle_start} | Reason={reason}")
             return pos
@@ -358,11 +360,12 @@ class DryExecutionStrategy(IExecutionStrategy):
                     Exit_Reason = ?,
                     Position_Status = ?,
                     Pnl = ?,
+                    Actual_Outcome = ?,
                     Updated_At = ?
                 WHERE Candle_Start = ?
             """
             self.async_writer.enqueue_write(
-                sql, (exit_price, reason, "CLOSED", pnl, now_dt, candle_start)
+                sql, (exit_price, reason, "CLOSED", pnl, actual_outcome, now_dt, candle_start)
             )
 
         logger.info(
