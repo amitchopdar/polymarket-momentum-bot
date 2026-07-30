@@ -225,9 +225,13 @@ class PolymarketTokenResolver:
                         resolved = (expected_slug, up_token, down_token)
                         self.cached_tokens[str(target_timestamp_ms)] = resolved
                         
-                        # Store in IMMUTABLE cached_open_prices (never touched by live stream ticks)
-                        self.cached_open_prices[str(target_timestamp_ms)] = (up_p, dn_p)
-                        self.cached_volumes[str(target_timestamp_ms)] = vol
+                        # Store in IMMUTABLE cached_open_prices (both ms and sec string keys)
+                        sec_key = str(int(target_timestamp_ms) // 1000)
+                        ms_key = str(target_timestamp_ms)
+                        self.cached_open_prices[ms_key] = (up_p, dn_p)
+                        self.cached_open_prices[sec_key] = (up_p, dn_p)
+                        self.cached_volumes[ms_key] = vol
+                        self.cached_volumes[sec_key] = vol
                         logger.info(f"T-5s Pre-Flight Resolved Polymarket Contract & Opening Prices for {expected_slug}: UP=${up_p:.2f} (ID: {up_token[:8]}...), DOWN=${dn_p:.2f} (ID: {down_token[:8]}...), Vol=${vol:,.2f}")
                         return resolved
 
@@ -237,6 +241,18 @@ class PolymarketTokenResolver:
         except Exception as e:
             logger.warning(f"✗ [PRE-FLIGHT FAILED] Query failed for {expected_slug}: {e}. Fail-Fast enforced.")
             return None
+
+    def get_open_prices(self, start_ts_ms: int) -> Tuple[float, float]:
+        """
+        Safely retrieves cached opening prices by ms or sec key, defaulting to (0.50, 0.50) if missing.
+        """
+        str_ms = str(start_ts_ms)
+        str_sec = str(start_ts_ms // 1000)
+        if str_ms in self.cached_open_prices:
+            return self.cached_open_prices[str_ms]
+        if str_sec in self.cached_open_prices:
+            return self.cached_open_prices[str_sec]
+        return (0.50, 0.50)
 
     def get_or_resolve_candle_tokens(self, candle_start_sec: int) -> Optional[Tuple[str, str]]:
         """
