@@ -133,71 +133,96 @@ class PolymarketBot:
             except Exception:
                 start_ts_ms = int(time.time() * 1000)
 
-        resolved = self.token_resolver.retry_fallback_at_t0(start_ts_ms)
-        settlement = self.token_resolver.fetch_resolved_market_settlement(start_ts_ms)
-        open_prices = self.token_resolver.cached_open_prices.get(str(start_ts_ms))
+        # 4. Asynchronous 5-Second Polling Loop for 100% Pure Official Polymarket Settlement (No Fallbacks!)
+        threading.Thread(
+            target=self._poll_polymarket_settlement_loop,
+            args=(start_ts_ms, candle_start, candle),
+            daemon=True,
+            name=f"SettlementPoller_{start_ts_ms}"
+        ).start()
 
-        # Check Fail-Closed / API Failure status
-        if not resolved or not settlement or not open_prices:
-            logger.warning(f"⚠ Polymarket API data incomplete for candle {candle_start}. Recording Status='API_FAILURE'.")
-            self.token_resolver.record_odds_ohclv(
-                candle_start, "FETCH_FAILED", "FETCH_FAILED", status="API_FAILURE", async_writer=self.async_writer
-            )
-            self.minute_tracker.reset()
-        else:
-            slug, up_tok, dn_tok = resolved
-            up_p, dn_p = open_prices  # Untouched immutable pre-flight entry prices
-            up_close, dn_close = settlement
-            real_vol = self.token_resolver.cached_volumes.get(str(start_ts_ms), candle.get("Volume", 0.0))
+    def _poll_polymarket_settlement_loop(self, start_ts_ms: int, candle_start: str, candle: Dict[str, Any]) -> None:
+        """
+        Polls Polymarket Gamma API every 5 seconds until official 100% resolution is confirmed.
+        ZERO synthetic guessing, zero fallback to Binance Close > Open!
+        """
+        logger.info(f"⏳ [SETTLEMENT POLLER] Initiated 5s polling loop for candle {candle_start}...")
+        
+        # Initial 15s wait to allow Polymarket Oracle time to post resolution
+        time.sleep(15.0)
+        
+        max_attempts = 60  # Poll up to 5 minutes (60 * 5s)
+        settlement = None
 
-            base_up_h = max(up_p, up_close)
-            base_up_l = min(up_p, up_close)
-            base_dn_h = max(dn_p, dn_close)
-            base_dn_l = min(dn_p, dn_close)
+        for attempt in range(1, max_attempts + 1):
+            resolved = self.token_resolver.retry_fallback_at_t0(start_ts_ms)
+            settlement = self.token_resolver.fetch_resolved_market_settlement(start_ts_ms)
+            open_prices = self.token_resolver.cached_open_prices.get(str(start_ts_ms))
 
-            # Retrieve dynamic minute-by-minute high/low tracking
-            minute_dict = self.minute_tracker.get_dict(base_up_h, base_up_l, base_dn_h, base_dn_l)
+            if resolved and settlement and open_prices:
+                slug, up_tok, dn_tok = resolved
+                up_p, dn_p = open_prices
+                up_close, dn_close = settlement
+                real_vol = self.token_resolver.cached_volumes.get(str(start_ts_ms), candle.get("Volume", 0.0))
 
-            # Compute true overall 5-minute High and Low across all minute ticks
-            up_high = max([base_up_h] + [v for k, v in minute_dict.items() if "Up_High" in k])
-            up_low = min([base_up_l] + [v for k, v in minute_dict.items() if "Up_Low" in k])
-            dn_high = max([base_dn_h] + [v for k, v in minute_dict.items() if "Down_High" in k])
-            dn_low = min([base_dn_l] + [v for k, v in minute_dict.items() if "Down_Low" in k])
+                base_up_h = max(up_p, up_close)
+                base_up_l = min(up_p, up_close)
+                base_dn_h = max(dn_p, dn_close)
+                base_dn_l = min(dn_p, dn_close)
 
-            up_ohclv = (up_p, up_high, up_low, up_close, real_vol)
-            dn_ohclv = (dn_p, dn_high, dn_low, dn_close, real_vol)
+                minute_dict = self.minute_tracker.get_dict(base_up_h, base_up_l, base_dn_h, base_dn_l)
 
-            self.token_resolver.record_odds_ohclv(
-                candle_start, up_tok, dn_tok, up_ohclv, dn_ohclv, minute_tracking=minute_dict, status="RESOLVED", async_writer=self.async_writer
-            )
-            self.minute_tracker.reset()
+                up_high = max([base_up_h] + [v for k, v in minute_dict.items() if "Up_High" in k])
+                up_low = min([base_up_l] + [v for k, v in minute_dict.items() if "Up_Low" in k])
+                dn_high = max([base_dn_h] + [v for k, v in minute_dict.items() if "Down_High" in k])
+                dn_low = min([base_dn_l] + [v for k, v in minute_dict.items() if "Down_Low" in k])
 
-            # Determine official market settlement actual outcome (UP vs DOWN)
-            actual_outcome = "UP" if up_close == 1.0 else ("DOWN" if dn_close == 1.0 else ("UP" if candle.get("Close", 0.0) > candle.get("Open", 0.0) else "DOWN"))
+                up_ohclv = (up_p, up_high, up_low, up_close, real_vol)
+                dn_ohclv = (dn_p, dn_high, dn_low, dn_close, real_vol)
 
-            # 5. Sprint 3 Active Position Expiry Settlement (Close OPEN/PENDING trades at candle end)
-            active_pos = self.dry_strategy.active_positions.get(candle_start)
-            if active_pos and active_pos["Position_Status"] in ("PENDING", "OPEN"):
-                side = active_pos.get("Prediction_Side", "")
-                settlement_price = up_close if side == "UP" else dn_close
-                pos_closed = self.dry_strategy.execute_exit(
-                    candle_start=candle_start,
-                    token_id=active_pos.get("Token_Id", ""),
-                    exit_price=settlement_price,
-                    reason="END_OF_CANDLE",
-                    actual_outcome=actual_outcome
+                self.token_resolver.record_odds_ohclv(
+                    candle_start, up_tok, dn_tok, up_ohclv, dn_ohclv, minute_tracking=minute_dict, status="RESOLVED", async_writer=self.async_writer
                 )
-                if pos_closed:
-                    self.notifier.notify_exit(candle_start, settlement_price, "END_OF_CANDLE", pos_closed.get("Pnl", 0.0))
-            if self.async_writer:
-                if not (active_pos and active_pos["Position_Status"] in ("PENDING", "OPEN")):
-                    self.async_writer.enqueue_write(
-                        "UPDATE Positions SET Actual_Outcome = ? WHERE Candle_Start = ?;",
-                        (actual_outcome, candle_start)
+                self.minute_tracker.reset()
+
+                # Determine 100% PURE official outcome (No fallback guessing!)
+                actual_outcome = "UP" if up_close == 1.0 else "DOWN"
+
+                logger.info(f"✓ [SETTLEMENT CONFIRMED] Official Polymarket Settlement for {candle_start}: Outcome={actual_outcome} (Attempt #{attempt})")
+
+                # Sprint 3 Active Position Expiry Settlement
+                active_pos = self.dry_strategy.active_positions.get(candle_start)
+                if active_pos and active_pos["Position_Status"] in ("PENDING", "OPEN"):
+                    side = active_pos.get("Prediction_Side", "")
+                    settlement_price = up_close if side == "UP" else dn_close
+                    pos_closed = self.dry_strategy.execute_exit(
+                        candle_start=candle_start,
+                        token_id=active_pos.get("Token_Id", ""),
+                        exit_price=settlement_price,
+                        reason="END_OF_CANDLE",
+                        actual_outcome=actual_outcome
                     )
-                # Flush WAL entries to disk immediately at end of every 5-minute candle
-                self.async_writer.checkpoint()
-                logger.info(f"💾 [WAL CHECKPOINT] Flushed SQLite WAL entries to PolyDB.sqlite disk for candle {candle_start}.")
+                    if pos_closed:
+                        self.notifier.notify_exit(candle_start, settlement_price, "END_OF_CANDLE", pos_closed.get("Pnl", 0.0))
+                
+                if self.async_writer:
+                    if not (active_pos and active_pos["Position_Status"] in ("PENDING", "OPEN")):
+                        self.async_writer.enqueue_write(
+                            "UPDATE Positions SET Actual_Outcome = ? WHERE Candle_Start = ?;",
+                            (actual_outcome, candle_start)
+                        )
+                    self.async_writer.checkpoint()
+                    logger.info(f"💾 [WAL CHECKPOINT] Flushed SQLite WAL entries to PolyDB.sqlite disk for candle {candle_start}.")
+                return
+
+            time.sleep(5.0)
+
+        # If 5-minute timeout reached without official resolution:
+        logger.warning(f"⚠ [SETTLEMENT POLLER TIMEOUT] Polymarket oracle resolution pending after 5m for candle {candle_start}. Recording Status='API_FAILURE'.")
+        self.token_resolver.record_odds_ohclv(
+            candle_start, "FETCH_FAILED", "FETCH_FAILED", status="API_FAILURE", async_writer=self.async_writer
+        )
+        self.minute_tracker.reset()
 
     def _handle_kline(self, kline_data: Dict[str, Any]) -> None:
         """

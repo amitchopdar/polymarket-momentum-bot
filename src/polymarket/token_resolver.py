@@ -272,7 +272,8 @@ class PolymarketTokenResolver:
     def fetch_resolved_market_settlement(self, target_timestamp_ms: int) -> Optional[Tuple[float, float]]:
         """
         Fetches official resolved settlement prices (UP close, DOWN close) directly from Polymarket API at market expiry.
-        Returns: (up_close_price, down_close_price) or None if settlement API call fails.
+        Returns: (1.0, 0.0) for UP win, (0.0, 1.0) for DOWN win, or None if market is not officially closed & settled yet.
+        ZERO synthetic guessing or pre-settlement price rounding!
         """
         expected_slug = self.generate_expected_slug(target_timestamp_ms)
         try:
@@ -284,19 +285,49 @@ class PolymarketTokenResolver:
                     markets = data[0].get("markets", [])
                     if markets:
                         mkt = markets[0]
+                        
+                        # 1. Check if market is officially closed
+                        is_closed = mkt.get("closed", False)
+                        
+                        # 2. Check token winner flags
+                        tokens = mkt.get("tokens", [])
+                        for tok in tokens:
+                            if tok.get("winner") is True:
+                                outcome = str(tok.get("outcome", "")).upper()
+                                if outcome == "UP":
+                                    logger.info(f"Official Polymarket Settlement Fetched for {expected_slug}: UP=1.0, DOWN=0.0 (Winner Flag)")
+                                    return (1.0, 0.0)
+                                elif outcome == "DOWN":
+                                    logger.info(f"Official Polymarket Settlement Fetched for {expected_slug}: UP=0.0, DOWN=1.0 (Winner Flag)")
+                                    return (0.0, 1.0)
+                        
+                        # 3. Check outcomePrices if market is closed
                         outcome_prices = mkt.get("outcomePrices")
                         if outcome_prices:
                             if isinstance(outcome_prices, str):
                                 import json
                                 outcome_prices = json.loads(outcome_prices)
-                            up_c = round(float(outcome_prices[0]))
-                            dn_c = round(float(outcome_prices[1]))
-                            logger.info(f"Official Polymarket Settlement Fetched for {expected_slug}: UP={up_c:.1f}, DOWN={dn_c:.1f}")
-                            return (float(up_c), float(dn_c))
+                            p0 = float(outcome_prices[0]) if len(outcome_prices) > 0 else 0.0
+                            p1 = float(outcome_prices[1]) if len(outcome_prices) > 1 else 0.0
+
+                            if p0 == 1.0 and p1 == 0.0:
+                                logger.info(f"Official Polymarket Settlement Fetched for {expected_slug}: UP=1.0, DOWN=0.0")
+                                return (1.0, 0.0)
+                            elif p0 == 0.0 and p1 == 1.0:
+                                logger.info(f"Official Polymarket Settlement Fetched for {expected_slug}: UP=0.0, DOWN=1.0")
+                                return (0.0, 1.0)
+                            elif is_closed:
+                                if p0 > p1:
+                                    logger.info(f"Official Polymarket Settlement Fetched for closed {expected_slug}: UP=1.0, DOWN=0.0 (p0={p0})")
+                                    return (1.0, 0.0)
+                                else:
+                                    logger.info(f"Official Polymarket Settlement Fetched for closed {expected_slug}: UP=0.0, DOWN=1.0 (p1={p1})")
+                                    return (0.0, 1.0)
+
         except Exception as e:
             logger.warning(f"Could not fetch official Polymarket settlement for {expected_slug}: {e}")
 
-        logger.warning(f"✗ [SETTLEMENT FETCH FAILED] Official Polymarket settlement unavailable for {expected_slug}.")
+        logger.warning(f"⚠ Official Polymarket settlement pending / unavailable for {expected_slug}.")
         return None
 
     def retry_fallback_at_t0(self, target_timestamp_ms: int) -> Optional[Tuple[str, str, str]]:
