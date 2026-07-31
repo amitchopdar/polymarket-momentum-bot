@@ -195,33 +195,38 @@ class PolymarketBot:
 
                 # Sprint 3 Active Position Expiry Settlement
                 active_pos = self.dry_strategy.active_positions.get(candle_start)
-                if active_pos and active_pos["Position_Status"] in ("PENDING", "OPEN"):
-                    side = active_pos.get("Prediction_Side", "")
-                    settlement_price = up_close if side == "UP" else dn_close
-                    pos_closed = self.dry_strategy.execute_exit(
-                        candle_start=candle_start,
-                        token_id=active_pos.get("Token_Id", ""),
-                        exit_price=settlement_price,
-                        reason="END_OF_CANDLE",
-                        actual_outcome=actual_outcome
-                    )
-                    if pos_closed:
-                        self.notifier.notify_exit(candle_start, settlement_price, "END_OF_CANDLE", pos_closed.get("Pnl", 0.0))
-                
+                if active_pos:
+                    active_pos["Actual_Outcome"] = actual_outcome
+                    if active_pos["Position_Status"] in ("PENDING", "OPEN"):
+                        side = active_pos.get("Prediction_Side", "")
+                        settlement_price = up_close if side == "UP" else dn_close
+                        pos_closed = self.dry_strategy.execute_exit(
+                            candle_start=candle_start,
+                            token_id=active_pos.get("Token_Id", ""),
+                            exit_price=settlement_price,
+                            reason="END_OF_CANDLE",
+                            actual_outcome=actual_outcome
+                        )
+                        if pos_closed:
+                            self.notifier.notify_exit(candle_start, settlement_price, "END_OF_CANDLE", pos_closed.get("Pnl", 0.0))
+
                 if self.async_writer:
-                    if not (active_pos and active_pos["Position_Status"] in ("PENDING", "OPEN")):
-                        # Update or Insert Actual_Outcome in Positions table so 100% of candles are recorded
-                        now_dt = datetime.fromtimestamp(time.time(), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-                        sql = """
-                            INSERT INTO Positions (
-                                Candle_Start, Prob_Cal, Prob_Uncal, Slug, Prediction_Side, Actual_Outcome,
-                                Entry_Timestamp, Target_Price, Target_Quantity, Position_Status, Cancel_Reason, Updated_At
-                            ) VALUES (?, 0.50, 0.50, ?, 'NO_TRADE', ?, ?, 0.0, 0.0, 'NO_TRADE', 'SETTLED', ?)
-                            ON CONFLICT(Candle_Start) DO UPDATE SET Actual_Outcome = excluded.Actual_Outcome, Updated_At = excluded.Updated_At;
-                        """
-                        self.async_writer.enqueue_write(sql, (candle_start, slug, actual_outcome, now_dt, now_dt))
+                    now_dt = datetime.fromtimestamp(time.time(), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                    # 1. Unconditionally update existing position row in Positions table
+                    self.async_writer.enqueue_write(
+                        "UPDATE Positions SET Actual_Outcome = ?, Updated_At = ? WHERE Candle_Start = ?;",
+                        (actual_outcome, now_dt, candle_start)
+                    )
+                    # 2. Insert fallback NO_TRADE row if no position row was previously created for this candle
+                    sql_fallback = """
+                        INSERT OR IGNORE INTO Positions (
+                            Candle_Start, Prob_Cal, Prob_Uncal, Slug, Prediction_Side, Actual_Outcome,
+                            Entry_Timestamp, Target_Price, Target_Quantity, Position_Status, Cancel_Reason, Updated_At
+                        ) VALUES (?, 0.50, 0.50, ?, 'NO_TRADE', ?, ?, 0.0, 0.0, 'NO_TRADE', 'SETTLED', ?);
+                    """
+                    self.async_writer.enqueue_write(sql_fallback, (candle_start, slug, actual_outcome, now_dt, now_dt))
                     self.async_writer.checkpoint()
-                    logger.info(f"💾 [WAL CHECKPOINT] Flushed SQLite WAL entries to PolyDB.sqlite disk for candle {candle_start}.")
+                    logger.info(f"💾 [WAL CHECKPOINT] Flushed SQLite WAL & Actual_Outcome='{actual_outcome}' to PolyDB.sqlite disk for candle {candle_start}.")
                 return
 
             time.sleep(5.0)
