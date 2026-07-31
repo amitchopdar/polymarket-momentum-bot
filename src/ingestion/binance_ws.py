@@ -143,17 +143,26 @@ class BinanceWebSocketClient:
             data = payload.get("data", {})
 
             if "kline" in stream_name and "k" in data and self.on_kline:
-                self.on_kline(data["k"])
+                try:
+                    self.on_kline(data["k"])
+                except Exception as k_err:
+                    logger.error(f"Error in on_kline callback: {k_err}", exc_info=True)
             elif "depth" in stream_name and self.on_depth:
-                bids = data.get("b", [])
-                asks = data.get("a", [])
-                self.on_depth(bids, asks)
+                try:
+                    bids = data.get("b", [])
+                    asks = data.get("a", [])
+                    self.on_depth(bids, asks)
+                except Exception as d_err:
+                    logger.error(f"Error in on_depth callback: {d_err}", exc_info=True)
             elif "forceOrder" in stream_name and self.on_liquidation:
-                order = data.get("o", {})
-                side = order.get("S", "")
-                qty = float(order.get("q", 0.0))
-                price = float(order.get("p", 0.0))
-                self.on_liquidation(side, qty, price)
+                try:
+                    order = data.get("o", {})
+                    side = order.get("S", "")
+                    qty = float(order.get("q", 0.0))
+                    price = float(order.get("p", 0.0))
+                    self.on_liquidation(side, qty, price)
+                except Exception as l_err:
+                    logger.error(f"Error in on_liquidation callback: {l_err}", exc_info=True)
 
         except Exception as e:
             logger.error(f"Error parsing WebSocket message: {e}")

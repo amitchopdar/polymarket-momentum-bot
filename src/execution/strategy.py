@@ -273,10 +273,11 @@ class DryExecutionStrategy(IExecutionStrategy):
                     sql, (filled_qty, fill_price, tx_price, "OPEN", now_dt, candle_start)
                 )
 
+            sl_price = pos.get("Stop_Loss_Price", config.stop_loss_price)
             logger.info(
                 f"✓ [DRY EXECUTION FILL] Limit Buy Executed! Candle={candle_start} | "
                 f"Fill_Price=${fill_price:.2f} | Qty={filled_qty} shares | Tx=${tx_price:.2f} | "
-                f"AUTOMATED STOP-LOSS ORDER PLACED at ${pos['Stop_Loss_Price']:.2f} (ID: {stop_loss_order_id})"
+                f"AUTOMATED STOP-LOSS ORDER PLACED at ${sl_price:.2f} (ID: {stop_loss_order_id})"
             )
 
         # 2. OPEN -> CLOSED (Stop Loss Hit)
