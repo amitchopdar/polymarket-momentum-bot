@@ -214,10 +214,16 @@ class PolymarketBot:
 
                 if self.async_writer:
                     now_dt = datetime.fromtimestamp(time.time(), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-                    # 1. Unconditionally update existing position row in Positions table
+                    try:
+                        dt_obj = datetime.strptime(candle_start, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                        next_c_start = datetime.fromtimestamp(dt_obj.timestamp() + 300, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        next_c_start = candle_start
+
+                    # 1. Unconditionally update existing position row in Positions table matching either candle_start or next_c_start
                     self.async_writer.enqueue_write(
-                        "UPDATE Positions SET Actual_Outcome = ?, Updated_At = ? WHERE Candle_Start = ?;",
-                        (actual_outcome, now_dt, candle_start)
+                        "UPDATE Positions SET Actual_Outcome = ?, Updated_At = ? WHERE Candle_Start = ? OR Candle_Start = ?;",
+                        (actual_outcome, now_dt, candle_start, next_c_start)
                     )
                     # 2. Insert fallback NO_TRADE row if no position row was previously created for this candle
                     sql_fallback = """
@@ -228,7 +234,7 @@ class PolymarketBot:
                     """
                     self.async_writer.enqueue_write(sql_fallback, (candle_start, slug, actual_outcome, now_dt, now_dt))
                     self.async_writer.flush_and_checkpoint()
-                    logger.info(f"💾 [WAL CHECKPOINT] Flushed SQLite WAL & Actual_Outcome='{actual_outcome}' to PolyDB.sqlite disk for candle {candle_start}.")
+                    logger.info(f"💾 [WAL CHECKPOINT] Flushed SQLite WAL & Actual_Outcome='{actual_outcome}' to PolyDB.sqlite disk for candle {candle_start} / {next_c_start}.")
                 return
 
             time.sleep(5.0)
