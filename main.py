@@ -158,14 +158,19 @@ class PolymarketBot:
             if not getattr(self, "running", True):
                 break
 
-            resolved = self.token_resolver.retry_fallback_at_t0(start_ts_ms)
             settlement = self.token_resolver.fetch_resolved_market_settlement(start_ts_ms)
-            open_prices = self.token_resolver.get_open_prices(start_ts_ms)
 
-            if resolved and settlement:
-                slug, up_tok, dn_tok = resolved
-                up_p, dn_p = open_prices
+            if settlement:
                 up_close, dn_close = settlement
+                actual_outcome = "UP" if up_close == 1.0 else "DOWN"
+                slug = self.token_resolver.generate_expected_slug(start_ts_ms)
+
+                resolved = self.token_resolver.retry_fallback_at_t0(start_ts_ms)
+                open_prices = self.token_resolver.get_open_prices(start_ts_ms)
+                
+                up_tok = resolved[1] if resolved else "CLOSED_MARKET_UP"
+                dn_tok = resolved[2] if resolved else "CLOSED_MARKET_DN"
+                up_p, dn_p = open_prices
                 real_vol = self.token_resolver.cached_volumes.get(str(start_ts_ms), candle.get("Volume", 0.0))
 
                 base_up_h = max(up_p, up_close)
@@ -187,9 +192,6 @@ class PolymarketBot:
                     candle_start, up_tok, dn_tok, up_ohclv, dn_ohclv, minute_tracking=minute_dict, status="RESOLVED", async_writer=self.async_writer
                 )
                 self.minute_tracker.reset()
-
-                # Determine 100% PURE official outcome (No fallback guessing!)
-                actual_outcome = "UP" if up_close == 1.0 else "DOWN"
 
                 logger.info(f"✓ [SETTLEMENT CONFIRMED] Official Polymarket Settlement for {candle_start}: Outcome={actual_outcome} (Attempt #{attempt})")
 
