@@ -114,6 +114,15 @@ class AsyncDBWriter:
         """
         self.enqueue_write("PRAGMA wal_checkpoint(FULL);")
 
+    def flush_and_checkpoint(self, timeout: float = 5.0) -> None:
+        """
+        Synchronously waits for all pending queued write queries to be executed by the worker thread,
+        then executes a FULL WAL checkpoint to flush all entries to disk instantly.
+        """
+        self.write_queue.join()
+        self.checkpoint()
+        self.write_queue.join()
+
     def _run(self) -> None:
         """
         Main worker thread loop processing write queries with locked retry resilience.

@@ -225,7 +225,7 @@ class PolymarketBot:
                         ) VALUES (?, 0.50, 0.50, ?, 'NO_TRADE', ?, ?, 0.0, 0.0, 'NO_TRADE', 'SETTLED', ?);
                     """
                     self.async_writer.enqueue_write(sql_fallback, (candle_start, slug, actual_outcome, now_dt, now_dt))
-                    self.async_writer.checkpoint()
+                    self.async_writer.flush_and_checkpoint()
                     logger.info(f"💾 [WAL CHECKPOINT] Flushed SQLite WAL & Actual_Outcome='{actual_outcome}' to PolyDB.sqlite disk for candle {candle_start}.")
                 return
 

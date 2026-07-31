@@ -298,11 +298,12 @@ class DryExecutionStrategy(IExecutionStrategy):
                         Exit_Reason = ?,
                         Position_Status = ?,
                         Pnl = ?,
+                        Actual_Outcome = ?,
                         Updated_At = ?
                     WHERE Candle_Start = ?
                 """
                 self.async_writer.enqueue_write(
-                    sql, (exit_price, "STOP_LOSS", "CLOSED", pnl, now_dt, candle_start)
+                    sql, (exit_price, "STOP_LOSS", "CLOSED", pnl, pos.get("Actual_Outcome"), now_dt, candle_start)
                 )
 
             logger.warning(
