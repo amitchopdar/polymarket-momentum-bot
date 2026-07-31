@@ -326,11 +326,11 @@ class PolymarketTokenResolver:
                             p0 = float(outcome_prices[0]) if len(outcome_prices) > 0 else 0.0
                             p1 = float(outcome_prices[1]) if len(outcome_prices) > 1 else 0.0
 
-                            if p0 == 1.0 and p1 == 0.0:
-                                logger.info(f"Official Polymarket Settlement Fetched for {expected_slug}: UP=1.0, DOWN=0.0")
+                            if p0 >= 0.90 or (p0 == 1.0 and p1 == 0.0):
+                                logger.info(f"Official Polymarket Settlement Fetched for {expected_slug}: UP=1.0, DOWN=0.0 (p0={p0})")
                                 return (1.0, 0.0)
-                            elif p0 == 0.0 and p1 == 1.0:
-                                logger.info(f"Official Polymarket Settlement Fetched for {expected_slug}: UP=0.0, DOWN=1.0")
+                            elif p1 >= 0.90 or (p0 == 0.0 and p1 == 1.0):
+                                logger.info(f"Official Polymarket Settlement Fetched for {expected_slug}: UP=0.0, DOWN=1.0 (p1={p1})")
                                 return (0.0, 1.0)
                             elif is_closed:
                                 if p0 > p1:
