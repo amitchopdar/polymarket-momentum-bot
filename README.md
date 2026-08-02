@@ -1,104 +1,126 @@
-# 🤖 Polymarket BTC 5-Minute Prediction Bot
+# Polymarket Momentum Bot V2 - Standalone Odds Momentum Engine
 
-An autonomous, ultra-low-latency algorithmic prediction and trading bot for Polymarket 5-minute Bitcoin binary options (`btc-updown-5m-timestamp`).
-
----
-
-## 🔒 **1. Security & Configuration Architecture**
-
-To ensure **0.00% secret exposure** on public repositories:
-- **Public Trading Parameters:** Configured directly in [`src/config.py`](file:///Users/kamalasahu/polymarket-bot/src/config.py) (Target prices, probability thresholds, stop-loss limits).
-- **Private Secrets & Credentials:** Loaded dynamically via Environment Variables or a private `.env` file (Bot tokens, chat IDs, admin user lists, API keys).
-- **Git Safety:** `.env`, `*.key`, `PolyDB.sqlite`, `venv/`, and logs are strictly ignored by `.gitignore`.
+High-frequency, tick-by-tick odds momentum trading bot for Polymarket 5-minute Bitcoin prediction markets.
 
 ---
 
-## ⚙️ **2. How to Update Configuration & Settings**
+## 🚀 Key Strategy Features
 
-### **A. Updating Non-Sensitive Trading Parameters (Target Prices, Stop-Loss, Probability)**
-Edit parameters in [`src/config.py`](file:///Users/kamalasahu/polymarket-bot/src/config.py):
-* **`USER_TARGET_BUY_PRICE = 0.48`** — Target limit buy order price ($0.48 / $0.40).
-* **`USER_STOP_LOSS_PRICE = 0.30`** — Stop loss exit price ($0.30 / $0.20).
-* **`USER_MIN_MODEL_PROBABILITY = 0.51`** — Minimum directional probability confidence threshold (51.0%).
-* **`USER_ORDER_TIMEOUT_SEC = 300.0`** — Unfilled limit buy order timeout cap (300 seconds / 5 minutes).
+* **Tick-by-Tick Odds Momentum Detection:** Ingests live order book feeds from Polymarket CLOB WebSocket (`wss://ws-subscriptions-clob.polymarket.com/ws/market`) and maintains a 10-second sliding tick window.
+* **10-Second Window Minimum Price Surge (`P_now - P_min_10s`):** Calculates $\Delta \text{Odds} = P_{\text{now}} - P_{\text{min\_10s}} \ge +0.15$ ($15$ cents) within 10 seconds.
+* **Minimum Entry Odds Floor ($\ge \$0.65$):** Entry signal only fires if current ask price is $\ge \$0.65$ ($65$ cents).
+* **Tiered Take-Profit (TP) & Stop-Loss (SL) Architecture:**
+  * **Tier 1 (Entry $< \$0.75$):**  
+    * **Take Profit:** $\text{Fill Price} + \$0.05$ ($+5$ cents gain).  
+    * **Stop Loss:** $\text{Fill Price} - \$0.10$ ($-10$ cents drop).
+  * **Tier 2 (Entry $\ge \$0.75$):**  
+    * **Take Profit:** Fixed at **$\$0.995$** (or user-configured target).  
+    * **Stop Loss:** Fixed at **$\$0.49$** ($49$ cents) (or user-configured target).
+* **Automatic Candle Expiry Rollover:** Closes open positions on 5-minute candle boundaries as `EXPIRED` and unlocks position guard.
+* **Real-Time Telegram Alerts:** Sends instant entry, exit, TP, SL, and expiry notifications to authorized chat IDs.
+* **Isolated SQLite Database:** Tracks all trades in `PolyDB_V2.sqlite`.
 
-*To apply updates to Oracle Cloud:*
+---
+
+## 📖 Step-by-Step Guide to Run Locally on Mac
+
+### **Step 1: Open Terminal**
+Press **`Cmd + Space`**, type **`Terminal`**, and press **Enter**.
+
+### **Step 2: Navigate to V2 Directory**
 ```bash
-git commit -am "Update trading parameters"
-git push origin main
-
-# On Oracle server terminal:
-cd ~/polymarket-bot && git pull && sudo systemctl restart polymarket-bot
+cd /Users/kamalasahu/polymarket-bot-v2
 ```
 
----
-
-### **B. Updating Private Secrets (Telegram Tokens, Admin User IDs, API Keys)**
-Private secrets live in your private `.env` file on your server (`/home/ubuntu/polymarket-bot/.env`):
-
-```ini
-TELEGRAM_BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN_HERE
-TELEGRAM_CHAT_ID=YOUR_CHAT_ID_HERE
-TELEGRAM_AUTHORIZED_USER_IDS=USER_ID_1,USER_ID_2
+### **Step 3: Run Unit Tests**
+```bash
+PYTHONPATH=. ./venv/bin/pytest tests/ -v
 ```
 
-*To update secrets on Oracle Cloud:*
-1. SSH into server: `ssh -i /path/to/ssh-key.key ubuntu@152.67.66.51`
-2. Edit private `.env`: `nano ~/polymarket-bot/.env`
-3. Restart bot: `sudo systemctl restart polymarket-bot`
-
----
-
-### **C. Quick Remote Control from Telegram (Zero Editing Required)**
-From your phone on Telegram, send:
-* **/status** — View live system health, active positions, model win rate, and current model PnL.
-* **/pnl** — View lifetime net PnL summary.
-* **/deactivate** — Temporarily pause live trading engine.
-* **/activate** — Resume live trading engine.
-* **/dryrun on** — Enable dry-run simulation mode.
-* **/dryrun off** — Enable live trading mode.
-
----
-
-## ⚡ **3. Local Execution Quickstart**
-
+### **Step 4: Launch Bot**
 ```bash
-cd /Users/kamalasahu/polymarket-bot
-
-# 1. Environment Setup
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-# 2. Run Test Suite (29 Tests - 100% Green)
-PYTHONPATH=. pytest tests/ -v
-
-# 3. Bootstrap History & Train Champion Model
-PYTHONPATH=. python3 scripts/bootstrap_history.py
-PYTHONPATH=. python3 scripts/train_model.py --force --trials 30
-
-# 4. Run Bot Locally
 PYTHONPATH=. python3 main.py
 ```
 
+### **Step 5: Stop Bot**
+Press **`Ctrl + C`** in your Terminal window for graceful shutdown.
+
 ---
 
-## ☁️ **4. Oracle Cloud Server Management (`152.67.66.51`)**
+## ☁️ End-to-End Oracle Cloud Docker Deployment Guide
 
-- **SSH Connection:**
+Follow these steps to host **Polymarket Momentum Bot V2** as a separate Docker container on your **Oracle Cloud Server (`152.67.66.51`)**:
+
+### **Phase 1: Local Mac Setup & GitHub Push**
+
+1. **Commit & Push Code to GitHub from Mac Terminal:**
+   ```bash
+   cd /Users/kamalasahu/polymarket-bot-v2
+   git add .
+   git commit -m "Production Polymarket Momentum Bot Setup"
+   git push -u origin main
+   ```
+
+---
+
+### **Phase 2: Oracle Cloud Server Deployment (`152.67.66.51`)**
+
+1. **SSH into Oracle Server:**
+   ```bash
+   ssh -i /Users/kamalasahu/Downloads/ssh-key-2026-07-26.key ubuntu@152.67.66.51
+   ```
+
+2. **Install Docker & Docker Compose (If needed):**
+   ```bash
+   sudo apt update && sudo apt upgrade -y
+   sudo apt install -y docker.io docker-compose-plugin
+   sudo systemctl enable --now docker
+   sudo usermod -aG docker ubuntu
+   ```
+
+3. **Clone Repo & Create `.env`:**
+   ```bash
+   cd /home/ubuntu
+   git clone https://github.com/amitchopdar/polymarket-momentum-bot.git
+   cd polymarket-momentum-bot
+
+   cat << 'EOF' > .env
+   EXECUTION_MODE="DRY_RUN"
+   TELEGRAM_BOT_TOKEN="8827575847:AAHi642Hnf8r2Vk7_XyIQM8ygR-irdP1J3A"
+   TELEGRAM_CHAT_ID="488798563,835915433"
+   TELEGRAM_AUTHORIZED_USER_IDS="488798563,835915433"
+   POLYMARKET_API_KEY=""
+   POLYMARKET_SECRET=""
+   POLYMARKET_PASSPHRASE=""
+   POLYMARKET_PRIVATE_KEY=""
+   EOF
+   ```
+
+4. **Build & Launch Container:**
+   ```bash
+   touch PolyDB_V2.sqlite
+   docker compose up -d --build
+   ```
+
+---
+
+### **Phase 3: Container Management & Logs**
+
+* **View Live Container Logs:**
   ```bash
-  ssh -i /Users/kamalasahu/Downloads/ssh-key-2026-07-26.key ubuntu@152.67.66.51
+  docker logs -f polymarket-bot-v2
   ```
-- **Service Status & Logs:**
+* **Check Running Containers:**
   ```bash
-  sudo systemctl status polymarket-bot
-  sudo journalctl -u polymarket-bot -f
+  docker ps
   ```
-- **Restart 24/7 Daemon:**
+* **Restart Container:**
   ```bash
-  sudo systemctl restart polymarket-bot
+  docker compose restart
   ```
-- **Flush SQLite WAL to Database:**
+* **Pull GitHub Updates & Rebuild:**
   ```bash
-  sqlite3 ~/polymarket-bot/PolyDB.sqlite "PRAGMA wal_checkpoint(FULL);"
+  cd /home/ubuntu/polymarket-momentum-bot
+  git pull
+  docker compose up -d --build
   ```

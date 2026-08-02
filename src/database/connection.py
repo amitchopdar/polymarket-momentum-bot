@@ -37,6 +37,7 @@ class PolyDBManager:
         cursor.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms};")
         cursor.execute("PRAGMA synchronous = NORMAL;")
         cursor.close()
+        create_tables(conn)
         return conn
 
     @contextmanager

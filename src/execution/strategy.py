@@ -348,7 +348,7 @@ class DryExecutionStrategy(IExecutionStrategy):
             return pos
 
         # If order was OPEN, calculate PnL and close
-        pnl = round((exit_price - pos["Average_Fill_Price"]) * pos["Filled_Quantity"], 2)
+        pnl = round((exit_price - pos["Average_Fill_Price"]) * pos["Filled_Quantity"], 4)
         pos["Exit_Price"] = exit_price
         pos["Exit_Reason"] = reason
         pos["Position_Status"] = "CLOSED"
@@ -376,6 +376,376 @@ class DryExecutionStrategy(IExecutionStrategy):
         )
 
         return pos
+
+
+class V2OddsMomentumStrategy(IExecutionStrategy):
+    """
+    Polymarket Bot V2 Dynamic Odds Momentum Strategy.
+    Tracks tick-by-tick odds changes over a 10-second sliding window per token.
+    Triggers Entry when absolute odds increase >= +0.15 in 10s.
+    Dynamic TP: +5% above entry price, OR $0.995 if Entry Odds >= 0.93.
+    Dynamic SL: -10% below entry price (Entry Odds * 0.90).
+    Enforces a strict SINGLE POSITION lock across the entire bot.
+    """
+
+    def __init__(self, async_writer: Optional[AsyncDBWriter] = None, notifier: Optional[Any] = None):
+        self.async_writer = async_writer
+        self.notifier = notifier
+        # Token tick buffers: token_id -> list of (timestamp_sec, bid, ask)
+        self.tick_buffers: Dict[str, List[Tuple[float, float, float]]] = {}
+        # Single Active Position Guard across the bot
+        self.active_position: Optional[Dict[str, Any]] = None
+
+    def process_tick(
+        self,
+        candle_start: str,
+        slug: str,
+        side: str,
+        token_id: str,
+        current_bid: Optional[float],
+        current_ask: Optional[float]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Processes real-time tick for a token, evaluates 10s momentum trigger, and checks open TP/SL exits.
+        """
+        if current_ask is None or current_ask <= 0.0:
+            return None
+
+        now_sec = time.time()
+        if token_id not in self.tick_buffers:
+            self.tick_buffers[token_id] = []
+
+        buf = self.tick_buffers[token_id]
+        buf.append((now_sec, current_bid or current_ask, current_ask))
+
+        # Evict ticks older than 15s
+        self.tick_buffers[token_id] = [t for t in buf if (now_sec - t[0]) <= 15.0]
+        buf = self.tick_buffers[token_id]
+
+        # 0. Candle Rollover Check: Close previous candle's position as EXPIRED if 5m boundary elapsed
+        if self.active_position and self.active_position.get("Candle_Start") != candle_start:
+            self._close_expired_position(current_bid or current_ask)
+
+        # 1. Evaluate TP/SL exit if this token has an active open position
+        if self.active_position and self.active_position.get("Token_Id") == token_id:
+            self._evaluate_tp_sl_exit(current_bid or current_ask, current_ask)
+
+        # 2. Single Position Guard: Reject entry if an active position is currently OPEN
+        if self.active_position is not None:
+            return None
+
+        # 3. 10-Second Window Minimum Price Surge (P_now - P_min_10s)
+        window_sec = getattr(config, "v2_momentum_window_sec", 10.0)
+        ticks_in_window = [t for t in buf if (now_sec - t[0]) <= (window_sec + 0.5)]
+
+        if not ticks_in_window:
+            return None
+
+        # Find minimum ask price recorded within the last 10 seconds
+        min_tick = min(ticks_in_window, key=lambda t: t[2])
+        min_ask_10s = min_tick[2]
+        delta_odds = round(current_ask - min_ask_10s, 4)
+
+        # 4. Trigger Condition: 10s Surge >= 15 cents AND Current Ask >= Minimum Entry Odds Floor ($0.65)
+        momentum_thresh = getattr(config, "v2_momentum_threshold_cents", 0.15)
+        min_odds_floor = getattr(config, "v2_min_entry_odds_floor", 0.65)
+
+        if delta_odds >= momentum_thresh and current_ask >= min_odds_floor:
+            return self.execute_entry_v2(
+                candle_start=candle_start,
+                slug=slug,
+                side=side,
+                token_id=token_id,
+                trigger_odds_10s_ago=min_ask_10s,
+                entry_odds=current_ask,
+                position_usd=getattr(config, "max_position_size_usd", 2.0)
+            )
+
+        return None
+
+    def execute_entry_v2(
+        self,
+        candle_start: str,
+        slug: str,
+        side: str,
+        token_id: str,
+        trigger_odds_10s_ago: float,
+        entry_odds: float,
+        position_usd: float = 2.0
+    ) -> Dict[str, Any]:
+        """
+        Executes V2 Position Entry using dynamic config settings.
+        Calculates Limit Buy Ceiling using config.v2_entry_slippage_buffer.
+        Calculates dynamic Stop Loss using config.v2_stop_loss_pct (-10%).
+        Calculates dynamic Take Profit using config.v2_take_profit_pct (+5%), or config.v2_high_odds_tp_target ($0.995) if fill >= config.v2_high_odds_cutoff ($0.93).
+        """
+        now_dt = datetime.fromtimestamp(time.time(), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Dynamic Slippage Ceiling Buffer (from config.v2_entry_slippage_buffer, default 0.04)
+        max_slippage = getattr(config, "v2_entry_slippage_buffer", 0.04)
+        limit_ceiling = round(entry_odds + max_slippage, 4)
+        
+        # In simulation execution, fill price matches entry ask up to ceiling
+        fill_price = min(entry_odds, limit_ceiling)
+        
+        # Tiered TP and SL Rules (Tier 1 < $0.75 vs Tier 2 >= $0.75)
+        high_odds_cutoff = getattr(config, "v2_high_odds_cutoff", 0.75)
+        high_odds_tp = getattr(config, "v2_high_odds_tp_target", 0.995)
+        high_odds_sl = getattr(config, "v2_high_odds_sl_target", 0.49)
+
+        tp_cents = getattr(config, "v2_take_profit_cents", 0.05)
+        sl_cents = getattr(config, "v2_stop_loss_cents", 0.10)
+
+        if fill_price >= high_odds_cutoff:
+            # Tier 2 (Entry >= $0.75): Fixed TP ($0.995) and Fixed SL ($0.49)
+            take_profit_price = high_odds_tp
+            stop_loss_price = high_odds_sl
+        else:
+            # Tier 1 (Entry < $0.75): Current +5c TP and -10c SL rules
+            take_profit_price = round(min(high_odds_tp, fill_price + tp_cents), 4)
+            stop_loss_price = round(max(0.01, fill_price - sl_cents), 4)
+
+        target_qty = round(position_usd / fill_price, 4) if fill_price > 0 else 0.0
+
+        pos = {
+            "Candle_Start": candle_start,
+            "Prob_Cal": 0.50,
+            "Prob_Uncal": 0.50,
+            "Slug": slug,
+            "Token_Id": token_id,
+            "Prediction_Side": side,
+            "Actual_Outcome": None,
+            "Entry_Timestamp": now_dt,
+            "Trigger_Odds_10s_Ago": trigger_odds_10s_ago,
+            "Entry_Odds": entry_odds,
+            "Limit_Ceiling": limit_ceiling,
+            "Target_Price": limit_ceiling,
+            "Target_Quantity": target_qty,
+            "Filled_Quantity": target_qty,
+            "Average_Fill_Price": fill_price,
+            "Take_Profit_Price": take_profit_price,
+            "Stop_Loss_Price": stop_loss_price,
+            "Exit_Timestamp": None,
+            "Exit_Price": None,
+            "Exit_Reason": None,
+            "Trade_Outcome": None,
+            "Order_Id": f"V2_ENTRY_{int(time.time()*1000)}",
+            "Position_Status": "OPEN",
+            "Cancel_Reason": None,
+            "Transaction_Price": round(fill_price * target_qty, 4),
+            "Pnl": 0.0,
+            "Updated_At": now_dt
+        }
+
+        # Lock active position
+        self.active_position = pos
+
+        if self.async_writer:
+            sql = """
+                INSERT INTO Positions (
+                    Candle_Start, Prob_Cal, Prob_Uncal, Slug, Token_Id, Prediction_Side, Actual_Outcome,
+                    Entry_Timestamp, Trigger_Odds_10s_Ago, Entry_Odds, Target_Price, Target_Quantity,
+                    Filled_Quantity, Average_Fill_Price, Take_Profit_Price, Stop_Loss_Price, Order_Id,
+                    Position_Status, Transaction_Price, Pnl, Updated_At
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            params = (
+                candle_start, 0.50, 0.50, slug, token_id, side, None,
+                now_dt, trigger_odds_10s_ago, entry_odds, limit_ceiling, target_qty,
+                target_qty, fill_price, take_profit_price, stop_loss_price, pos["Order_Id"],
+                "OPEN", pos["Transaction_Price"], 0.0, now_dt
+            )
+            self.async_writer.enqueue_write(sql, params)
+
+        logger.info(
+            f"🚀 [V2 SIGNAL ENTERED] Side={side} | Candle={candle_start} | Ask=${entry_odds:.3f} | "
+            f"Buy_Ceiling=${limit_ceiling:.3f} (+${max_slippage:.2f}) | Fill=${fill_price:.3f} | "
+            f"10s_Ago=${trigger_odds_10s_ago:.3f} (+{entry_odds - trigger_odds_10s_ago:+.3f}) | "
+            f"TP=${take_profit_price:.4f} | SL=${stop_loss_price:.4f} | Qty={target_qty}"
+        )
+
+        if hasattr(self, "notifier") and self.notifier:
+            try:
+                self.notifier.notify_v2_trade_entry(
+                    candle_start=candle_start,
+                    side=side,
+                    fill_price=fill_price,
+                    buy_ceiling=limit_ceiling,
+                    tp_price=take_profit_price,
+                    sl_price=stop_loss_price,
+                    qty=target_qty,
+                    position_usd=position_usd
+                )
+            except Exception as e:
+                logger.warning(f"Failed to dispatch Telegram entry notification: {e}")
+
+        return pos
+
+    def _evaluate_tp_sl_exit(self, current_bid: float, current_ask: float) -> Optional[Dict[str, Any]]:
+        """
+        Evaluates active open position against Take Profit and Stop Loss thresholds on every live tick.
+        """
+        pos = self.active_position
+        if not pos or pos.get("Position_Status") != "OPEN":
+            return None
+
+        tp_price = pos["Take_Profit_Price"]
+        sl_price = pos["Stop_Loss_Price"]
+        entry_price = pos["Average_Fill_Price"]
+        qty = pos["Filled_Quantity"]
+        candle_start = pos["Candle_Start"]
+        now_dt = datetime.fromtimestamp(time.time(), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        # 1. TAKE PROFIT TRIGGER (current_bid >= TP Price)
+        if current_bid >= tp_price:
+            exit_price = current_bid
+            pnl = round((exit_price - entry_price) * qty, 4)
+            pos["Exit_Timestamp"] = now_dt
+            pos["Exit_Price"] = exit_price
+            pos["Exit_Reason"] = "TAKE_PROFIT"
+            pos["Trade_Outcome"] = "TAKE_PROFIT_ACHIEVED"
+            pos["Position_Status"] = "CLOSED"
+            pos["Pnl"] = pnl
+            pos["Updated_At"] = now_dt
+
+            if self.async_writer:
+                sql = """
+                    UPDATE Positions SET
+                        Exit_Timestamp = ?,
+                        Exit_Price = ?,
+                        Exit_Reason = ?,
+                        Trade_Outcome = 'TAKE_PROFIT_ACHIEVED',
+                        Position_Status = 'CLOSED',
+                        Pnl = ?,
+                        Updated_At = ?
+                    WHERE Candle_Start = ? AND Position_Status = 'OPEN';
+                """
+                self.async_writer.enqueue_write(sql, (now_dt, exit_price, "TAKE_PROFIT", pnl, now_dt, candle_start))
+
+            logger.info(
+                f"🎯 [V2 TAKE PROFIT HIT] Target Achieved! Side={pos['Prediction_Side']} | Candle={candle_start} | "
+                f"Exit_Price=${exit_price:.4f} (TP Target=${tp_price:.4f}) | PnL=${pnl:+.4f}"
+            )
+            if hasattr(self, "notifier") and self.notifier:
+                try:
+                    self.notifier.notify_v2_trade_exit(candle_start, pos['Prediction_Side'], exit_price, "TAKE_PROFIT_ACHIEVED", pnl)
+                except Exception as e:
+                    logger.warning(f"Failed to dispatch Telegram TP exit notification: {e}")
+
+            # Clear tick buffer for this token to prevent instant re-trigger on same 10s window
+            if pos.get("Token_Id") in self.tick_buffers:
+                self.tick_buffers[pos["Token_Id"]].clear()
+            # Unlock active position
+            self.active_position = None
+            return pos
+
+        # 2. STOP LOSS TRIGGER (current_bid <= SL Price)
+        if current_bid <= sl_price:
+            exit_price = sl_price
+            pnl = round((exit_price - entry_price) * qty, 4)
+            pos["Exit_Timestamp"] = now_dt
+            pos["Exit_Price"] = exit_price
+            pos["Exit_Reason"] = "STOP_LOSS"
+            pos["Trade_Outcome"] = "STOP_LOSS_HIT"
+            pos["Position_Status"] = "CLOSED"
+            pos["Pnl"] = pnl
+            pos["Updated_At"] = now_dt
+
+            if self.async_writer:
+                sql = """
+                    UPDATE Positions SET
+                        Exit_Timestamp = ?,
+                        Exit_Price = ?,
+                        Exit_Reason = ?,
+                        Trade_Outcome = 'STOP_LOSS_HIT',
+                        Position_Status = 'CLOSED',
+                        Pnl = ?,
+                        Updated_At = ?
+                    WHERE Candle_Start = ? AND Position_Status = 'OPEN';
+                """
+                self.async_writer.enqueue_write(sql, (now_dt, exit_price, "STOP_LOSS", pnl, now_dt, candle_start))
+
+            logger.warning(
+                f"🛑 [V2 STOP LOSS HIT] Exit Executed! Side={pos['Prediction_Side']} | Candle={candle_start} | "
+                f"Exit_Price=${exit_price:.4f} (SL Target=${sl_price:.4f}) | PnL=${pnl:+.4f}"
+            )
+            if hasattr(self, "notifier") and self.notifier:
+                try:
+                    self.notifier.notify_v2_trade_exit(candle_start, pos['Prediction_Side'], exit_price, "STOP_LOSS_HIT", pnl)
+                except Exception as e:
+                    logger.warning(f"Failed to dispatch Telegram SL exit notification: {e}")
+
+            # Clear tick buffer for this token to prevent instant re-trigger on same 10s window
+            if pos.get("Token_Id") in self.tick_buffers:
+                self.tick_buffers[pos["Token_Id"]].clear()
+            # Unlock active position
+            self.active_position = None
+            return pos
+
+        return None
+
+    def _close_expired_position(self, current_price: Optional[float] = None) -> Optional[Dict[str, Any]]:
+        """
+        Closes active position from previous candle on 5m boundary rollover and unlocks single position guard.
+        """
+        pos = self.active_position
+        if not pos:
+            return None
+
+        now_dt = datetime.fromtimestamp(time.time(), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        entry_price = pos["Average_Fill_Price"]
+        qty = pos["Filled_Quantity"]
+        exit_price = current_price or entry_price
+        pnl = round((exit_price - entry_price) * qty, 4)
+        candle_start = pos["Candle_Start"]
+
+        pos["Exit_Timestamp"] = now_dt
+        pos["Exit_Price"] = exit_price
+        pos["Exit_Reason"] = "CANDLE_EXPIRED"
+        pos["Trade_Outcome"] = "EXPIRED"
+        pos["Position_Status"] = "CLOSED"
+        pos["Pnl"] = pnl
+        pos["Updated_At"] = now_dt
+
+        if self.async_writer:
+            sql = """
+                UPDATE Positions SET
+                    Exit_Timestamp = ?,
+                    Exit_Price = ?,
+                    Exit_Reason = 'CANDLE_EXPIRED',
+                    Trade_Outcome = 'EXPIRED',
+                    Position_Status = 'CLOSED',
+                    Pnl = ?,
+                    Updated_At = ?
+                WHERE Candle_Start = ? AND Position_Status = 'OPEN';
+            """
+            self.async_writer.enqueue_write(sql, (now_dt, exit_price, pnl, now_dt, candle_start))
+
+        logger.info(
+            f"⌛ [V2 CANDLE EXPIRED] Position Closed on 5m Boundary! Side={pos['Prediction_Side']} | "
+            f"Candle={candle_start} | Exit_Price=${exit_price:.4f} | PnL=${pnl:+.4f}"
+        )
+        if hasattr(self, "notifier") and self.notifier:
+            try:
+                self.notifier.notify_v2_trade_exit(candle_start, pos['Prediction_Side'], exit_price, "CANDLE_EXPIRED", pnl)
+            except Exception as e:
+                logger.warning(f"Failed to dispatch Telegram Expired notification: {e}")
+
+        if pos.get("Token_Id") in self.tick_buffers:
+            self.tick_buffers[pos["Token_Id"]].clear()
+
+        # Unlock active position for new 5m candle
+        self.active_position = None
+        return pos
+
+    def execute_entry(self, *args, **kwargs) -> Optional[Dict[str, Any]]:
+        return None
+
+    def execute_exit(self, *args, **kwargs) -> Optional[Dict[str, Any]]:
+        return None
+
+    def check_and_update_positions(self, *args, **kwargs) -> Optional[Dict[str, Any]]:
+        return None
 
 
 class LiveExecutionStrategy(IExecutionStrategy):
@@ -434,3 +804,4 @@ class LiveExecutionStrategy(IExecutionStrategy):
         current_ask: Optional[float]
     ) -> Optional[Dict[str, Any]]:
         return self.dry_strategy.check_and_update_positions(candle_start, token_id, current_bid, current_ask)
+

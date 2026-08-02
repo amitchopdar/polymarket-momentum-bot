@@ -42,8 +42,10 @@ class TelegramNotifier:
     """
 
     def __init__(self, bot_token: Optional[str] = None, chat_id: Optional[str] = None):
-        self.bot_token = bot_token or config.telegram_bot_token
-        self.chat_id = chat_id or config.telegram_chat_id
+        raw_token = bot_token or getattr(config, "telegram_bot_token", "")
+        raw_chat = chat_id or getattr(config, "telegram_chat_id", "")
+        self.bot_token = str(raw_token).strip("\"' ") if raw_token else ""
+        self.chat_id = str(raw_chat).strip("\"' ") if raw_chat else ""
         self.msg_queue: queue.Queue = queue.Queue()
         self.running = False
         self.worker_thread: Optional[threading.Thread] = None
@@ -89,10 +91,15 @@ class TelegramNotifier:
     def _dispatch_http_request(self, html_text: str) -> None:
         chat_ids = set()
         if self.chat_id:
-            chat_ids.add(str(self.chat_id))
+            for item in str(self.chat_id).split(","):
+                cleaned = item.strip("\"' ")
+                if cleaned:
+                    chat_ids.add(cleaned)
         for uid in getattr(config, "telegram_authorized_user_ids", []):
             if uid:
-                chat_ids.add(str(uid))
+                cleaned = str(uid).strip("\"' ")
+                if cleaned:
+                    chat_ids.add(cleaned)
 
         for cid in chat_ids:
             url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
@@ -175,6 +182,42 @@ class TelegramNotifier:
             f"• 📈 <b>UP Prob:</b> <code>{p_up:.1f}%</code> | 📉 <b>DOWN Prob:</b> <code>{p_dn:.1f}%</code>\n"
             f"• <b>Confidence Tier:</b> <code>{tier}</code>\n"
             f"• <b>Reason:</b> <code>{reason}</code>"
+        )
+        self.send_message(text)
+
+    def notify_v2_trade_entry(self, candle_start: str, side: str, fill_price: float, buy_ceiling: float, tp_price: float, sl_price: float, qty: float, position_usd: float) -> None:
+        ist_str = format_ist(candle_start)
+        emoji = "🟢" if side == "UP" else "🔴"
+        text = (
+            f"🚀 <b>V2 MOMENTUM TRADE ENTERED</b>\n"
+            f"• <b>Candle:</b> <code>{ist_str}</code>\n"
+            f"• <b>Prediction Side:</b> {emoji} <code>{side}</code>\n"
+            f"• <b>Fill Price:</b> <code>${fill_price:.3f}</code>\n"
+            f"• <b>Buy Ceiling Cap:</b> <code>${buy_ceiling:.3f}</code>\n"
+            f"• 🎯 <b>Take Profit:</b> <code>${tp_price:.4f}</code>\n"
+            f"• 🛑 <b>Stop Loss:</b> <code>${sl_price:.4f}</code>\n"
+            f"• 💰 <b>Position Size:</b> <code>${position_usd:.2f}</code> ({qty:.2f} shares)\n"
+            f"• ⚡ <b>Execution Mode:</b> <code>{config.execution_mode}</code>"
+        )
+        self.send_message(text)
+
+    def notify_v2_trade_exit(self, candle_start: str, side: str, exit_price: float, reason: str, pnl: float) -> None:
+        ist_str = format_ist(candle_start)
+        if reason == "TAKE_PROFIT_ACHIEVED":
+            header = "🎯 <b>V2 TAKE PROFIT HIT</b>"
+        elif reason == "STOP_LOSS_HIT":
+            header = "🛑 <b>V2 STOP LOSS TRIGGERED</b>"
+        else:
+            header = "⌛ <b>V2 CANDLE EXPIRED</b>"
+        
+        emoji = "📈" if pnl >= 0 else "📉"
+        text = (
+            f"{header}\n"
+            f"• <b>Candle:</b> <code>{ist_str}</code>\n"
+            f"• <b>Side:</b> <code>{side}</code>\n"
+            f"• <b>Exit Price:</b> <code>${exit_price:.4f}</code>\n"
+            f"• <b>Exit Reason:</b> <code>{reason}</code>\n"
+            f"• {emoji} <b>Net PnL:</b> <code>${pnl:+.4f}</code>"
         )
         self.send_message(text)
 

@@ -1,13 +1,13 @@
 """
-Global Application Configuration & Risk Settings (Sprint 3: US3.1)
-Manages environment variables, execution modes, trade parameters, risk thresholds, and Telegram credentials.
+Global Application Configuration for Polymarket Bot V2
+Single Source of Truth for V2 Dynamic Strategy, Database, Telegram, and Live Wallet Settings.
+All sensitive credentials are read strictly from environment variables or .env file.
 """
 
 import os
-import json
 import logging
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -21,25 +21,6 @@ def parse_int_list(raw: str) -> List[int]:
             res.append(int(item))
     return res
 
-# ==============================================================================
-# POLYMARKET BOT CONFIGURATION (Single Source of Truth)
-# Edit your parameters directly here, or set environment variables.
-# ==============================================================================
-
-# 1. Execution Mode ('DRY_RUN' for simulation, 'LIVE' for real trading)
-USER_EXECUTION_MODE = "DRY_RUN"
-
-# 2. Risk & Execution Boundaries
-USER_TARGET_BUY_PRICE = 0.48       # Target limit buy price ($0.40)
-USER_STOP_LOSS_PRICE = 0.30        # Stop loss sell price ($0.20)
-USER_MIN_MODEL_PROBABILITY = 0.5001  # Minimum model directional confidence threshold (55.0%)
-USER_MAX_POSITION_SIZE_USD = 2.0  # Max position size per trade ($50.0)
-USER_MIN_L2_DEPTH_SHARES = 10.0    # Min order book liquidity depth
-USER_MAX_SLIPPAGE_TOLERANCE = 0.02 # Max slippage tolerance (2%)
-USER_SLA_LATENCY_LIMIT_MS = 100.0  # Max SLA latency limit (100 ms)
-USER_ORDER_TIMEOUT_SEC = 300.0     # Order timeout cap (300 seconds / 5 minutes)
-USER_MIN_REQUIRED_WIN_RATE = 0.55  # Minimum model win rate (55.0%) required for production promotion
-
 # Auto-load local .env file if present
 _env_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
 if os.path.exists(_env_file):
@@ -49,74 +30,85 @@ if os.path.exists(_env_file):
                 _line = _line.strip()
                 if _line and not _line.startswith("#") and "=" in _line:
                     _k, _v = _line.split("=", 1)
-                    os.environ.setdefault(_k.strip(), _v.strip())
+                    _val = _v.strip().strip("\"' ")
+                    os.environ.setdefault(_k.strip(), _val)
     except Exception:
         pass
 
-# 3. Telegram Notifications & Remote Command Router (Loaded via Environment / .env)
-USER_TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-USER_TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+# ==============================================================================
+# POLYMARKET BOT V2 STRATEGY PARAMETERS (Non-Sensitive Defaults)
+# ==============================================================================
 
-# List of authorized admin Telegram User IDs allowed to issue remote slash commands
-_auth_ids_env = os.getenv("TELEGRAM_AUTHORIZED_USER_IDS", "")
-USER_TELEGRAM_AUTHORIZED_USER_IDS = [int(x.strip()) for x in _auth_ids_env.split(",") if x.strip().isdigit()]
-
-# 4. Polymarket Live Wallet & API Credentials (Required ONLY for LIVE mode)
-USER_POLYMARKET_API_KEY = os.getenv("POLYMARKET_API_KEY", "")
-USER_POLYMARKET_SECRET = os.getenv("POLYMARKET_SECRET", "")
-USER_POLYMARKET_PASSPHRASE = os.getenv("POLYMARKET_PASSPHRASE", "")
-USER_POLYMARKET_PRIVATE_KEY = os.getenv("POLYMARKET_PRIVATE_KEY", "")
+USER_EXECUTION_MODE = "DRY_RUN"
+USER_V2_MOMENTUM_THRESHOLD_CENTS = 0.15   # 15-cent (+0.15) absolute odds increase threshold
+USER_V2_MOMENTUM_WINDOW_SEC = 10.0        # Sliding momentum lookback window (10 seconds)
+USER_V2_ENTRY_SLIPPAGE_BUFFER = 0.04       # 4-cent (+0.04) limit buy ceiling buffer
+USER_V2_TAKE_PROFIT_CENTS = 0.05            # Take Profit absolute cents gain target (+0.05 / +5 cents for Tier 1)
+USER_V2_STOP_LOSS_CENTS = 0.10              # Stop Loss absolute cents drop target (-0.10 / -10 cents for Tier 1)
+USER_V2_HIGH_ODDS_CUTOFF = 0.75            # High odds cutoff threshold for Tier 2 ($0.75 / 75 cents)
+USER_V2_HIGH_ODDS_TP_TARGET = 0.995        # Fixed TP target price for Tier 2 ($0.995 / $1.00 or below)
+USER_V2_HIGH_ODDS_SL_TARGET = 0.49         # Fixed SL target price for Tier 2 ($0.49 / 49 cents)
+USER_V2_MIN_ENTRY_ODDS_FLOOR = 0.65       # Minimum odds floor required for trade entry ($0.65 / 65 cents)
+USER_V2_MAX_POSITION_SIZE_USD = 2.0        # Max position size per trade ($2.00)
+USER_V2_MAX_ACTIVE_POSITIONS = 1          # Single active position limit across bot (1 position)
 # ==============================================================================
 
 
 @dataclass
 class AppConfig:
     """
-    Centralized bot configuration object.
-    Supports dry-run toggle, risk parameters, API endpoints, database settings, and Telegram controls.
+    Centralized bot configuration object for Polymarket Bot V2.
+    Personal sensitive credentials (Telegram tokens, wallet keys) are read EXCLUSIVELY from .env file.
     """
-    # Environment & Risk Toggles (US3.1)
+    # Environment & Mode Toggles
     execution_mode: str = field(default_factory=lambda: os.getenv("EXECUTION_MODE", USER_EXECUTION_MODE).upper())
     dry_run: bool = field(default_factory=lambda: os.getenv("EXECUTION_MODE", USER_EXECUTION_MODE).upper() == "DRY_RUN")
     trading_active: bool = True
     
     # Database Settings
-    db_path: str = "PolyDB.sqlite"
+    db_path: str = "PolyDB_V2.sqlite"
     busy_timeout_ms: int = 30000
 
-    # Exchange & Stream Settings
-    symbol: str = "BTCUSDT"
-    candle_interval: str = "5m"
-    binance_ws_url: str = "wss://fstream.binance.com/stream?streams=btcusdt@kline_5m/btcusdt@depth10@100ms/btcusdt@forceOrder"
-    binance_rest_url: str = "https://fapi.binance.com/fapi/v1/klines"
+    # Polymarket Endpoint URLs
     polymarket_gamma_url: str = "https://gamma-api.polymarket.com/events"
     polymarket_clob_url: str = "https://clob.polymarket.com"
 
-    # Execution & Risk Boundaries (US3.2)
-    target_buy_price: float = field(default_factory=lambda: float(os.getenv("TARGET_BUY_PRICE", str(USER_TARGET_BUY_PRICE))))
-    target_entry_price: float = field(default_factory=lambda: float(os.getenv("TARGET_BUY_PRICE", str(USER_TARGET_BUY_PRICE))))
-    stop_loss_price: float = field(default_factory=lambda: float(os.getenv("STOP_LOSS_PRICE", str(USER_STOP_LOSS_PRICE))))
-    min_model_probability: float = field(default_factory=lambda: float(os.getenv("MIN_MODEL_PROBABILITY", str(USER_MIN_MODEL_PROBABILITY))))
-    max_position_size_usd: float = field(default_factory=lambda: float(os.getenv("MAX_POSITION_SIZE_USD", str(USER_MAX_POSITION_SIZE_USD))))
-    min_l2_depth_shares: float = field(default_factory=lambda: float(os.getenv("MIN_L2_DEPTH_SHARES", str(USER_MIN_L2_DEPTH_SHARES))))
-    max_slippage_tolerance: float = field(default_factory=lambda: float(os.getenv("MAX_SLIPPAGE_TOLERANCE", str(USER_MAX_SLIPPAGE_TOLERANCE))))
-    sla_latency_limit_ms: float = field(default_factory=lambda: float(os.getenv("SLA_LATENCY_LIMIT_MS", str(USER_SLA_LATENCY_LIMIT_MS))))
-    order_timeout_sec: float = field(default_factory=lambda: float(os.getenv("ORDER_TIMEOUT_SEC", str(USER_ORDER_TIMEOUT_SEC))))
-    min_required_win_rate: float = field(default_factory=lambda: float(os.getenv("MIN_REQUIRED_WIN_RATE", str(USER_MIN_REQUIRED_WIN_RATE))))
+    # V2 Dynamic Strategy Fields
+    v2_momentum_threshold_cents: float = field(default_factory=lambda: float(os.getenv("V2_MOMENTUM_THRESHOLD_CENTS", str(USER_V2_MOMENTUM_THRESHOLD_CENTS))))
+    v2_momentum_window_sec: float = field(default_factory=lambda: float(os.getenv("V2_MOMENTUM_WINDOW_SEC", str(USER_V2_MOMENTUM_WINDOW_SEC))))
+    v2_entry_slippage_buffer: float = field(default_factory=lambda: float(os.getenv("V2_ENTRY_SLIPPAGE_BUFFER", str(USER_V2_ENTRY_SLIPPAGE_BUFFER))))
+    v2_take_profit_cents: float = field(default_factory=lambda: float(os.getenv("V2_TAKE_PROFIT_CENTS", str(USER_V2_TAKE_PROFIT_CENTS))))
+    v2_stop_loss_cents: float = field(default_factory=lambda: float(os.getenv("V2_STOP_LOSS_CENTS", str(USER_V2_STOP_LOSS_CENTS))))
+    v2_high_odds_cutoff: float = field(default_factory=lambda: float(os.getenv("V2_HIGH_ODDS_CUTOFF", str(USER_V2_HIGH_ODDS_CUTOFF))))
+    v2_high_odds_tp_target: float = field(default_factory=lambda: float(os.getenv("V2_HIGH_ODDS_TP_TARGET", str(USER_V2_HIGH_ODDS_TP_TARGET))))
+    v2_high_odds_sl_target: float = field(default_factory=lambda: float(os.getenv("V2_HIGH_ODDS_SL_TARGET", str(USER_V2_HIGH_ODDS_SL_TARGET))))
+    v2_min_entry_odds_floor: float = field(default_factory=lambda: float(os.getenv("V2_MIN_ENTRY_ODDS_FLOOR", str(USER_V2_MIN_ENTRY_ODDS_FLOOR))))
+    max_position_size_usd: float = field(default_factory=lambda: float(os.getenv("MAX_POSITION_SIZE_USD", str(USER_V2_MAX_POSITION_SIZE_USD))))
+    v2_max_active_positions: int = field(default_factory=lambda: int(os.getenv("V2_MAX_ACTIVE_POSITIONS", str(USER_V2_MAX_ACTIVE_POSITIONS))))
 
-    # Notification & Remote Commands (US4.2, US4.3)
+    # System Default Fallback Properties (for legacy helper compatibility)
+    target_buy_price: float = 0.48
+    target_entry_price: float = 0.48
+    stop_loss_price: float = 0.30
+    min_model_probability: float = 0.5001
+    min_l2_depth_shares: float = 10.0
+    max_slippage_tolerance: float = 0.02
+    sla_latency_limit_ms: float = 100.0
+    order_timeout_sec: float = 300.0
+    min_required_win_rate: float = 0.55
+
+    # Sensitive Personal Credentials (LOADED EXCLUSIVELY FROM .env / ENVIRONMENT)
     telegram_enabled: bool = True
-    telegram_bot_token: str = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", "") or USER_TELEGRAM_BOT_TOKEN)
-    telegram_chat_id: str = field(default_factory=lambda: os.getenv("TELEGRAM_CHAT_ID", "") or USER_TELEGRAM_CHAT_ID)
+    telegram_bot_token: str = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""))
+    telegram_chat_id: str = field(default_factory=lambda: os.getenv("TELEGRAM_CHAT_ID", ""))
     telegram_authorized_user_ids: List[int] = field(
-        default_factory=lambda: parse_int_list(os.getenv("TELEGRAM_AUTHORIZED_USER_IDS", "")) or USER_TELEGRAM_AUTHORIZED_USER_IDS
+        default_factory=lambda: parse_int_list(os.getenv("TELEGRAM_AUTHORIZED_USER_IDS", ""))
     )
 
-    # Polymarket Live Wallet & API Credentials
-    polymarket_api_key: str = field(default_factory=lambda: os.getenv("POLYMARKET_API_KEY", "") or USER_POLYMARKET_API_KEY)
-    polymarket_secret: str = field(default_factory=lambda: os.getenv("POLYMARKET_SECRET", "") or USER_POLYMARKET_SECRET)
-    polymarket_passphrase: str = field(default_factory=lambda: os.getenv("POLYMARKET_PASSPHRASE", "") or USER_POLYMARKET_PASSPHRASE)
-    polymarket_private_key: str = field(default_factory=lambda: os.getenv("POLYMARKET_PRIVATE_KEY", "") or USER_POLYMARKET_PRIVATE_KEY)
+    polymarket_api_key: str = field(default_factory=lambda: os.getenv("POLYMARKET_API_KEY", ""))
+    polymarket_secret: str = field(default_factory=lambda: os.getenv("POLYMARKET_SECRET", ""))
+    polymarket_passphrase: str = field(default_factory=lambda: os.getenv("POLYMARKET_PASSPHRASE", ""))
+    polymarket_private_key: str = field(default_factory=lambda: os.getenv("POLYMARKET_PRIVATE_KEY", ""))
 
     def is_dry_run(self) -> bool:
         return self.execution_mode == "DRY_RUN" or self.dry_run

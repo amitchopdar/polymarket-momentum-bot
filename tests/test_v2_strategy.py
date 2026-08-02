@@ -1,0 +1,141 @@
+"""
+Unit Tests for Polymarket Bot V2 Execution Strategy (V2OddsMomentumStrategy)
+"""
+
+import time
+import sqlite3
+import pytest
+from src.database.schema import create_tables
+from src.database.connection import PolyDBManager, AsyncDBWriter
+from src.execution.strategy import V2OddsMomentumStrategy
+
+@pytest.fixture
+def memory_db():
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    yield conn
+    conn.close()
+
+def test_v2_minimum_odds_floor_filter(memory_db):
+    strat = V2OddsMomentumStrategy(async_writer=None)
+    candle_start = "2026-07-31 17:00:00"
+    slug = "btc-updown-5m-1785517200"
+
+    now_sec = time.time()
+    
+    # 1. Signal at $0.55 (Surge +0.15 >= 0.15, but Ask $0.55 < $0.65 floor) -> NO TRADE
+    strat.tick_buffers["TOK_LOW"] = [(now_sec - 10.0, 0.39, 0.40)]
+    pos_low = strat.process_tick(candle_start, slug, "UP", "TOK_LOW", 0.54, 0.55)
+    assert pos_low is None
+
+    # 2. Signal at $0.70 (Surge +0.16 >= 0.15 AND Ask $0.70 >= $0.65 floor) -> ENTER TRADE
+    strat.tick_buffers["TOK_HIGH"] = [(now_sec - 10.0, 0.53, 0.54)]
+    pos_high = strat.process_tick(candle_start, slug, "UP", "TOK_HIGH", 0.69, 0.70)
+    assert pos_high is not None
+    assert pos_high["Entry_Odds"] == 0.70
+
+def test_v2_momentum_trigger_and_tp_sl_calculation(memory_db):
+    strat = V2OddsMomentumStrategy(async_writer=None)
+    candle_start = "2026-07-31 17:00:00"
+    slug = "btc-updown-5m-1785517200"
+    token_id = "TOK_UP_123"
+
+    now_sec = time.time()
+    
+    # 1. Feed tick 10 seconds ago at $0.50
+    strat.tick_buffers[token_id] = [(now_sec - 10.0, 0.49, 0.50)]
+
+    # 2. Feed tick now at $0.66 (+0.16 shift >= +0.15 AND $0.66 >= $0.65)
+    pos = strat.process_tick(candle_start, slug, "UP", token_id, 0.65, 0.66)
+
+    assert pos is not None
+    assert pos["Position_Status"] == "OPEN"
+    assert pos["Entry_Odds"] == 0.66
+    assert pos["Take_Profit_Price"] == round(0.66 + 0.05, 4)  # $0.71 (+5 cents)
+    assert pos["Stop_Loss_Price"] == round(0.66 - 0.10, 4)    # $0.56 (-10 cents)
+    assert strat.active_position is not None
+
+def test_v2_high_odds_tp_target(memory_db):
+    strat = V2OddsMomentumStrategy(async_writer=None)
+    candle_start = "2026-07-31 17:05:00"
+    slug = "btc-updown-5m-1785517500"
+    token_id = "TOK_UP_99"
+
+    now_sec = time.time()
+    
+    # Tick 10s ago at $0.64
+    strat.tick_buffers[token_id] = [(now_sec - 10.0, 0.63, 0.64)]
+
+    # Tick now at $0.80 (+0.16 shift >= +0.15, and Entry $0.80 >= $0.75 cutoff)
+    pos = strat.process_tick(candle_start, slug, "UP", token_id, 0.79, 0.80)
+
+    assert pos is not None
+    assert pos["Entry_Odds"] == 0.80
+    assert pos["Take_Profit_Price"] == 0.995  # Fixed $0.995 target for entry >= $0.75
+    assert pos["Stop_Loss_Price"] == 0.49     # Fixed $0.49 target for entry >= $0.75
+
+def test_v2_single_position_guard(memory_db):
+    strat = V2OddsMomentumStrategy(async_writer=None)
+    candle_start = "2026-07-31 17:10:00"
+    slug = "btc-updown-5m-1785517800"
+
+    now_sec = time.time()
+    strat.tick_buffers["TOK_UP"] = [(now_sec - 10.0, 0.49, 0.50)]
+    strat.tick_buffers["TOK_DN"] = [(now_sec - 10.0, 0.49, 0.50)]
+
+    # Enter UP position
+    pos_up = strat.process_tick(candle_start, slug, "UP", "TOK_UP", 0.65, 0.66)
+    assert pos_up is not None
+
+    # Attempt simultaneous DOWN entry signal (+0.20 shift)
+    pos_dn = strat.process_tick(candle_start, slug, "DOWN", "TOK_DN", 0.69, 0.70)
+    assert pos_dn is None  # Locked!
+
+def test_v2_tp_and_sl_exits(memory_db):
+    strat = V2OddsMomentumStrategy(async_writer=None)
+    candle_start = "2026-07-31 17:15:00"
+    slug = "btc-updown-5m-1785518100"
+    token_id = "TOK_EXIT_TEST"
+
+    now_sec = time.time()
+    strat.tick_buffers[token_id] = [(now_sec - 10.0, 0.49, 0.50)]
+
+    # Entry at $0.50 -> TP = $0.525, SL = $0.45
+    pos = strat.process_tick(candle_start, slug, "UP", token_id, 0.64, 0.65)
+    assert pos is not None
+    tp_target = pos["Take_Profit_Price"]
+    sl_target = pos["Stop_Loss_Price"]
+
+    # Tick at bid $0.62 (between SL $0.585 and TP $0.6825) -> Remains OPEN
+    strat.process_tick(candle_start, slug, "UP", token_id, 0.62, 0.63)
+    assert strat.active_position is not None
+
+    # Tick at bid >= TP target -> Closed with TAKE_PROFIT_ACHIEVED
+    strat.process_tick(candle_start, slug, "UP", token_id, tp_target + 0.01, tp_target + 0.02)
+    assert strat.active_position is None  # Guard unlocked!
+
+def test_v2_candle_expiry_rollover(memory_db):
+    strat = V2OddsMomentumStrategy(async_writer=None)
+    candle_1 = "2026-07-31 17:15:00"
+    candle_2 = "2026-07-31 17:20:00"
+    slug_1 = "btc-updown-5m-1785518100"
+    slug_2 = "btc-updown-5m-1785518400"
+    token_1 = "TOK_CANDLE_1"
+    token_2 = "TOK_CANDLE_2"
+
+    now_sec = time.time()
+    strat.tick_buffers[token_1] = [(now_sec - 10.0, 0.49, 0.50)]
+
+    # Enter position in Candle 1
+    pos_1 = strat.process_tick(candle_1, slug_1, "UP", token_1, 0.64, 0.65)
+    assert pos_1 is not None
+    assert strat.active_position is not None
+
+    # Candle 2 starts (new candle start timestamp). Position from Candle 1 should auto-expire & unlock!
+    strat.tick_buffers[token_2] = [(now_sec - 10.0, 0.49, 0.50)]
+    pos_2 = strat.process_tick(candle_2, slug_2, "DOWN", token_2, 0.65, 0.66)
+
+    # Candle 2 trade should successfully enter!
+    assert pos_2 is not None
+    assert pos_2["Candle_Start"] == candle_2
+    assert pos_2["Prediction_Side"] == "DOWN"

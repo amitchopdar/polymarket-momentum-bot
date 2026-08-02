@@ -60,26 +60,34 @@ CREATE TABLE IF NOT EXISTS Odds_OHCLV (
 );
 """
 
-# US0.4: Positions table definition
+# US0.4: Positions table definition for V2
 CREATE_POSITIONS_TABLE = """
 CREATE TABLE IF NOT EXISTS Positions (
-    Candle_Start TEXT PRIMARY KEY,
-    Prob_Cal REAL NOT NULL,
-    Prob_Uncal REAL NOT NULL,
+    Trade_Id INTEGER PRIMARY KEY AUTOINCREMENT,
+    Candle_Start TEXT NOT NULL,
+    Prob_Cal REAL NOT NULL DEFAULT 0.50,
+    Prob_Uncal REAL NOT NULL DEFAULT 0.50,
     Slug TEXT NOT NULL,
+    Token_Id TEXT,
     Prediction_Side TEXT NOT NULL,
     Actual_Outcome TEXT DEFAULT NULL,
     Entry_Timestamp DATETIME NOT NULL,
+    Trigger_Odds_10s_Ago REAL,
+    Entry_Odds REAL,
     Target_Price REAL NOT NULL,
     Target_Quantity REAL NOT NULL,
     Filled_Quantity REAL DEFAULT 0.0,
     Average_Fill_Price REAL,
+    Take_Profit_Price REAL,
+    Stop_Loss_Price REAL,
+    Exit_Timestamp DATETIME,
+    Exit_Price REAL,
+    Exit_Reason TEXT,
+    Trade_Outcome TEXT,
     Order_Id TEXT,
     Position_Status TEXT NOT NULL,
     Cancel_Reason TEXT,
     Transaction_Price REAL,
-    Exit_Price REAL,
-    Exit_Reason TEXT,
     Pnl REAL,
     Updated_At DATETIME NOT NULL
 );
@@ -101,10 +109,21 @@ def create_tables(conn: sqlite3.Connection) -> None:
     if "Status" not in columns:
         cursor.execute("ALTER TABLE Odds_OHCLV ADD COLUMN Status TEXT DEFAULT 'RESOLVED';")
 
-    # Check and migrate Actual_Outcome column if Positions table existed previously without it
+    # Check and migrate V2 columns for Positions if table existed previously
     cursor.execute("PRAGMA table_info(Positions);")
     pos_columns = [row[1] for row in cursor.fetchall()]
-    if "Actual_Outcome" not in pos_columns:
-        cursor.execute("ALTER TABLE Positions ADD COLUMN Actual_Outcome TEXT DEFAULT NULL;")
+    migration_cols = {
+        "Actual_Outcome": "TEXT DEFAULT NULL",
+        "Token_Id": "TEXT",
+        "Trigger_Odds_10s_Ago": "REAL",
+        "Entry_Odds": "REAL",
+        "Take_Profit_Price": "REAL",
+        "Stop_Loss_Price": "REAL",
+        "Exit_Timestamp": "DATETIME",
+        "Trade_Outcome": "TEXT"
+    }
+    for col_name, col_type in migration_cols.items():
+        if col_name not in pos_columns:
+            cursor.execute(f"ALTER TABLE Positions ADD COLUMN {col_name} {col_type};")
 
     conn.commit()

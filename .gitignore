@@ -12,7 +12,13 @@ __pycache__/
 # Databases
 *.sqlite
 *.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
 *.db
+
+# Environment & Sensitive Keys
+.env
+.env.local
 
 # Temporary logs & OS files
 *.log
