@@ -536,6 +536,7 @@ class V2OddsMomentumStrategy(IExecutionStrategy):
             "Pnl": 0.0,
             "Min_Price_Observed": fill_price,
             "Max_Price_Observed": fill_price,
+            "High_Water_Mark": fill_price,
             "Updated_At": now_dt
         }
 
@@ -601,12 +602,28 @@ class V2OddsMomentumStrategy(IExecutionStrategy):
 
         # Determine effective live price for exit evaluation (prefer bid, fallback to ask)
         eff_price = current_bid if (current_bid is not None and current_bid > 0) else current_ask
+        peak_price = max(current_bid or 0.0, current_ask or 0.0)
 
-        # Update running candle extremes
+        # Update running candle extremes and High Water Mark (HWM)
         if eff_price is not None and eff_price > 0:
             pos["Min_Price_Observed"] = min(pos.get("Min_Price_Observed", eff_price), eff_price)
-            pos["Max_Price_Observed"] = max(pos.get("Max_Price_Observed", eff_price), eff_price)
+            pos["Max_Price_Observed"] = max(pos.get("Max_Price_Observed", peak_price), peak_price)
 
+            # High Water Mark Trailing Stop Loss Logic (Option A)
+            hwm = max(pos.get("High_Water_Mark", entry_price), peak_price)
+            pos["High_Water_Mark"] = hwm
+
+            trailing_enabled = getattr(config, "v2_trailing_sl_enabled", True)
+            if trailing_enabled:
+                trailing_dist = getattr(config, "v2_trailing_sl_distance_cents", 0.10)
+                candidate_sl = round(hwm - trailing_dist, 4)
+                # Trailing SL can ONLY move UP, never down
+                if candidate_sl > pos["Stop_Loss_Price"]:
+                    pos["Stop_Loss_Price"] = candidate_sl
+                    # Reset minimum price tracking from the new peak
+                    pos["Min_Price_Observed"] = eff_price
+
+        sl_price = pos["Stop_Loss_Price"]
         min_obs = pos.get("Min_Price_Observed", eff_price or 1.0)
         max_obs = pos.get("Max_Price_Observed", eff_price or 0.0)
 
