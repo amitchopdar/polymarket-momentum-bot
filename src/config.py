@@ -90,17 +90,6 @@ class AppConfig:
     max_position_size_usd: float = field(default_factory=lambda: float(os.getenv("MAX_POSITION_SIZE_USD", str(USER_V2_MAX_POSITION_SIZE_USD))))
     v2_max_active_positions: int = field(default_factory=lambda: int(os.getenv("V2_MAX_ACTIVE_POSITIONS", str(USER_V2_MAX_ACTIVE_POSITIONS))))
 
-    # System Default Fallback Properties (for legacy helper compatibility)
-    target_buy_price: float = 0.48
-    target_entry_price: float = 0.48
-    stop_loss_price: float = 0.30
-    min_model_probability: float = 0.5001
-    min_l2_depth_shares: float = 10.0
-    max_slippage_tolerance: float = 0.02
-    sla_latency_limit_ms: float = 100.0
-    order_timeout_sec: float = 300.0
-    min_required_win_rate: float = 0.55
-
     # Sensitive Personal Credentials (LOADED EXCLUSIVELY FROM .env / ENVIRONMENT)
     telegram_enabled: bool = True
     telegram_bot_token: str = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""))
@@ -131,5 +120,5 @@ class AppConfig:
         status_str = "ACTIVE" if active else "DEACTIVATED"
         logger.info(f"✓ Bot trading engine status set to: {status_str}")
 
-# Global config instance
+
 config = AppConfig()

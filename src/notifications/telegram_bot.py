@@ -238,10 +238,10 @@ class TelegramCommandRouter:
         text = (
             "📊 <b>SYSTEM ENGINE STATUS</b>\n"
             f"• <b>Engine Status:</b> <code>{active_str}</code>\n"
-            f"• <b>Execution Mode:</b> <code>{config.execution_mode}</code>\n"
-            f"• <b>Target Buy Price:</b> <code>${config.target_buy_price:.2f}</code>\n"
-            f"• <b>Stop-Loss Price:</b> <code>${config.stop_loss_price:.2f}</code>\n"
-            f"• <b>Min Prob Threshold:</b> <code>{config.min_model_probability:.2f}</code>\n"
+            f"• <b>Momentum Surge Thresh:</b> <code>+${config.v2_momentum_threshold_cents:.2f}</code>\n"
+            f"• <b>Take Profit (Tier 1):</b> <code>+${config.v2_take_profit_cents:.2f}</code>\n"
+            f"• <b>Stop Loss (Tier 1):</b> <code>-${config.v2_stop_loss_cents:.2f}</code>\n"
+            f"• <b>High Odds Cutoff:</b> <code>${config.v2_high_odds_cutoff:.2f}</code>\n"
             f"• <b>Positions:</b> PENDING={pending_cnt} | OPEN={open_cnt} | CLOSED={closed_cnt}\n\n"
             f"{model_text}"
         )
