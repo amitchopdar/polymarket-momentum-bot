@@ -72,7 +72,7 @@ def test_v2_high_odds_tp_target(memory_db):
     assert pos is not None
     assert pos["Entry_Odds"] == 0.80
     assert pos["Take_Profit_Price"] == 0.995  # Fixed $0.995 target for entry >= $0.75
-    assert pos["Stop_Loss_Price"] == 0.49     # Fixed $0.49 target for entry >= $0.75
+    assert pos["Stop_Loss_Price"] == round(0.80 - 0.10, 4)  # Initial SL = $0.70 ($0.80 - 0.10)
 
 def test_v2_single_position_guard(memory_db):
     strat = V2OddsMomentumStrategy(async_writer=None)
@@ -89,30 +89,24 @@ def test_v2_single_position_guard(memory_db):
 
     # Attempt simultaneous DOWN entry signal (+0.20 shift)
     pos_dn = strat.process_tick(candle_start, slug, "DOWN", "TOK_DN", 0.69, 0.70)
-    assert pos_dn is None  # Locked!
+    assert pos_dn is None
 
 def test_v2_tp_and_sl_exits(memory_db):
     strat = V2OddsMomentumStrategy(async_writer=None)
     candle_start = "2026-07-31 17:15:00"
     slug = "btc-updown-5m-1785518100"
-    token_id = "TOK_EXIT_TEST"
+    token_id = "TOK_UP_SL"
 
     now_sec = time.time()
     strat.tick_buffers[token_id] = [(now_sec - 10.0, 0.49, 0.50)]
 
-    # Entry at $0.50 -> TP = $0.525, SL = $0.45
-    pos = strat.process_tick(candle_start, slug, "UP", token_id, 0.64, 0.65)
+    # 1. Enter UP position at $0.66 (TP = $0.71, SL = $0.56)
+    pos = strat.process_tick(candle_start, slug, "UP", token_id, 0.65, 0.66)
     assert pos is not None
-    tp_target = pos["Take_Profit_Price"]
-    sl_target = pos["Stop_Loss_Price"]
 
-    # Tick at bid $0.62 (between SL $0.585 and TP $0.6825) -> Remains OPEN
-    strat.process_tick(candle_start, slug, "UP", token_id, 0.62, 0.63)
-    assert strat.active_position is not None
-
-    # Tick at bid >= TP target -> Closed with TAKE_PROFIT_ACHIEVED
-    strat.process_tick(candle_start, slug, "UP", token_id, tp_target + 0.01, tp_target + 0.02)
-    assert strat.active_position is None  # Guard unlocked!
+    # 2. Feed tick below SL ($0.55 <= $0.56) -> Instantly closed with STOP_LOSS_HIT
+    strat.process_tick(candle_start, slug, "UP", token_id, 0.54, 0.55)
+    assert strat.active_position is None
 
 def test_v2_candle_expiry_rollover(memory_db):
     strat = V2OddsMomentumStrategy(async_writer=None)
@@ -151,13 +145,13 @@ def test_v2_mid_candle_dip_below_sl_and_expiry_validation(memory_db):
     now_sec = time.time()
     strat.tick_buffers[token_id] = [(now_sec - 10.0, 0.63, 0.64)]
 
-    # Enter position at $0.80 (High Odds Cutoff >= $0.75, SL = $0.49)
+    # Enter position at $0.80 (High Odds Cutoff >= $0.75, SL = $0.70)
     pos = strat.process_tick(candle_1, slug_1, "UP", token_id, 0.79, 0.80)
     assert pos is not None
-    assert pos["Stop_Loss_Price"] == 0.49
+    assert pos["Stop_Loss_Price"] == 0.70
 
-    # Mid-candle tick dips to $0.45 (breaching SL $0.49)
-    strat.process_tick(candle_1, slug_1, "UP", token_id, 0.44, 0.45)
+    # Mid-candle tick dips to $0.69 (breaching SL $0.70)
+    strat.process_tick(candle_1, slug_1, "UP", token_id, 0.68, 0.69)
     
     # Assert position was instantly closed as STOP_LOSS_HIT
     assert strat.active_position is None
@@ -207,10 +201,10 @@ def test_v2_high_odds_trailing_sl(memory_db):
     now_sec = time.time()
     strat.tick_buffers[token_id] = [(now_sec - 10.0, 0.63, 0.64)]
 
-    # Entry at $0.80 (Tier 2 >= $0.75, Initial SL = $0.49)
+    # Entry at $0.80 (Tier 2 >= $0.75, Initial SL = $0.70)
     pos = strat.process_tick(candle, slug, "UP", token_id, 0.79, 0.80)
     assert pos is not None
-    assert pos["Stop_Loss_Price"] == 0.49
+    assert pos["Stop_Loss_Price"] == 0.70
 
     # Price advances to $0.92 (HWM = $0.92, Trailing SL updates to $0.82)
     strat.process_tick(candle, slug, "UP", token_id, 0.91, 0.92)

@@ -44,10 +44,8 @@ USER_V2_MOMENTUM_THRESHOLD_CENTS = 0.15   # 15-cent (+0.15) absolute odds increa
 USER_V2_MOMENTUM_WINDOW_SEC = 10.0        # Sliding momentum lookback window (10 seconds)
 USER_V2_ENTRY_SLIPPAGE_BUFFER = 0.04       # 4-cent (+0.04) limit buy ceiling buffer
 USER_V2_TAKE_PROFIT_CENTS = 0.05            # Take Profit absolute cents gain target (+0.05 / +5 cents for Tier 1)
-USER_V2_STOP_LOSS_CENTS = 0.10              # Stop Loss absolute cents drop target (-0.10 / -10 cents for Tier 1)
 USER_V2_HIGH_ODDS_CUTOFF = 0.75            # High odds cutoff threshold for Tier 2 ($0.75 / 75 cents)
 USER_V2_HIGH_ODDS_TP_TARGET = 0.995        # Fixed TP target price for Tier 2 ($0.995 / $1.00 or below)
-USER_V2_HIGH_ODDS_SL_TARGET = 0.49         # Fixed SL target price for Tier 2 ($0.49 / 49 cents)
 USER_V2_TRAILING_SL_ENABLED = True         # Enable Trailing Stop Loss based on High Water Mark
 USER_V2_TRAILING_SL_DISTANCE_CENTS = 0.10  # Trailing SL distance from HWM (10 cents)
 USER_V2_MIN_ENTRY_ODDS_FLOOR = 0.65       # Minimum odds floor required for trade entry ($0.65 / 65 cents)
@@ -80,15 +78,24 @@ class AppConfig:
     v2_momentum_window_sec: float = field(default_factory=lambda: float(os.getenv("V2_MOMENTUM_WINDOW_SEC", str(USER_V2_MOMENTUM_WINDOW_SEC))))
     v2_entry_slippage_buffer: float = field(default_factory=lambda: float(os.getenv("V2_ENTRY_SLIPPAGE_BUFFER", str(USER_V2_ENTRY_SLIPPAGE_BUFFER))))
     v2_take_profit_cents: float = field(default_factory=lambda: float(os.getenv("V2_TAKE_PROFIT_CENTS", str(USER_V2_TAKE_PROFIT_CENTS))))
-    v2_stop_loss_cents: float = field(default_factory=lambda: float(os.getenv("V2_STOP_LOSS_CENTS", str(USER_V2_STOP_LOSS_CENTS))))
     v2_high_odds_cutoff: float = field(default_factory=lambda: float(os.getenv("V2_HIGH_ODDS_CUTOFF", str(USER_V2_HIGH_ODDS_CUTOFF))))
     v2_high_odds_tp_target: float = field(default_factory=lambda: float(os.getenv("V2_HIGH_ODDS_TP_TARGET", str(USER_V2_HIGH_ODDS_TP_TARGET))))
-    v2_high_odds_sl_target: float = field(default_factory=lambda: float(os.getenv("V2_HIGH_ODDS_SL_TARGET", str(USER_V2_HIGH_ODDS_SL_TARGET))))
     v2_trailing_sl_enabled: bool = field(default_factory=lambda: os.getenv("V2_TRAILING_SL_ENABLED", "TRUE").upper() == "TRUE")
     v2_trailing_sl_distance_cents: float = field(default_factory=lambda: float(os.getenv("V2_TRAILING_SL_DISTANCE_CENTS", str(USER_V2_TRAILING_SL_DISTANCE_CENTS))))
     v2_min_entry_odds_floor: float = field(default_factory=lambda: float(os.getenv("V2_MIN_ENTRY_ODDS_FLOOR", str(USER_V2_MIN_ENTRY_ODDS_FLOOR))))
     max_position_size_usd: float = field(default_factory=lambda: float(os.getenv("MAX_POSITION_SIZE_USD", str(USER_V2_MAX_POSITION_SIZE_USD))))
     v2_max_active_positions: int = field(default_factory=lambda: int(os.getenv("V2_MAX_ACTIVE_POSITIONS", str(USER_V2_MAX_ACTIVE_POSITIONS))))
+
+    # Legacy V1 Compatibility Fallbacks (for V1 test suite compatibility)
+    target_buy_price: float = 0.48
+    target_entry_price: float = 0.48
+    stop_loss_price: float = 0.30
+    min_model_probability: float = 0.5001
+    min_l2_depth_shares: float = 10.0
+    max_slippage_tolerance: float = 0.02
+    sla_latency_limit_ms: float = 100.0
+    order_timeout_sec: float = 300.0
+    min_required_win_rate: float = 0.55
 
     # Sensitive Personal Credentials (LOADED EXCLUSIVELY FROM .env / ENVIRONMENT)
     telegram_enabled: bool = True

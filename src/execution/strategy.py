@@ -488,22 +488,21 @@ class V2OddsMomentumStrategy(IExecutionStrategy):
         # In simulation execution, fill price matches entry ask up to ceiling
         fill_price = min(entry_odds, limit_ceiling)
         
-        # Tiered TP and SL Rules (Tier 1 < $0.75 vs Tier 2 >= $0.75)
+        # Single Unified Trailing SL & Take Profit Calculation
         high_odds_cutoff = getattr(config, "v2_high_odds_cutoff", 0.75)
         high_odds_tp = getattr(config, "v2_high_odds_tp_target", 0.995)
-        high_odds_sl = getattr(config, "v2_high_odds_sl_target", 0.49)
-
         tp_cents = getattr(config, "v2_take_profit_cents", 0.05)
-        sl_cents = getattr(config, "v2_stop_loss_cents", 0.10)
+        trailing_dist = getattr(config, "v2_trailing_sl_distance_cents", 0.10)
+
+        # Initial Stop Loss at entry = Fill Price - Trailing Distance
+        stop_loss_price = round(max(0.01, fill_price - trailing_dist), 4)
 
         if fill_price >= high_odds_cutoff:
-            # Tier 2 (Entry >= $0.75): Fixed TP ($0.995) and Fixed SL ($0.49)
+            # Tier 2 (Entry >= $0.75): Fixed High Odds TP ($0.995)
             take_profit_price = high_odds_tp
-            stop_loss_price = high_odds_sl
         else:
-            # Tier 1 (Entry < $0.75): Current +5c TP and -10c SL rules
+            # Tier 1 (Entry < $0.75): +5c TP gain target
             take_profit_price = round(min(high_odds_tp, fill_price + tp_cents), 4)
-            stop_loss_price = round(max(0.01, fill_price - sl_cents), 4)
 
         target_qty = round(position_usd / fill_price, 4) if fill_price > 0 else 0.0
 
