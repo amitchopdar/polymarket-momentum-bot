@@ -139,3 +139,25 @@ def test_v2_candle_expiry_rollover(memory_db):
     assert pos_2 is not None
     assert pos_2["Candle_Start"] == candle_2
     assert pos_2["Prediction_Side"] == "DOWN"
+
+def test_v2_mid_candle_dip_below_sl_and_expiry_validation(memory_db):
+    strat = V2OddsMomentumStrategy(async_writer=None)
+    candle_1 = "2026-08-03 23:00:00"
+    candle_2 = "2026-08-03 23:05:00"
+    slug_1 = "btc-updown-5m-1785800000"
+    slug_2 = "btc-updown-5m-1785800300"
+    token_id = "TOK_HIGH_ODDS"
+
+    now_sec = time.time()
+    strat.tick_buffers[token_id] = [(now_sec - 10.0, 0.63, 0.64)]
+
+    # Enter position at $0.80 (High Odds Cutoff >= $0.75, SL = $0.49)
+    pos = strat.process_tick(candle_1, slug_1, "UP", token_id, 0.79, 0.80)
+    assert pos is not None
+    assert pos["Stop_Loss_Price"] == 0.49
+
+    # Mid-candle tick dips to $0.45 (breaching SL $0.49)
+    strat.process_tick(candle_1, slug_1, "UP", token_id, 0.44, 0.45)
+    
+    # Assert position was instantly closed as STOP_LOSS_HIT
+    assert strat.active_position is None
